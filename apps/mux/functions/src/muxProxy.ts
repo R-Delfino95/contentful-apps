@@ -19,18 +19,35 @@ export const handler: FunctionEventHandler<FunctionTypeEnum.AppActionCall> = asy
   const { method, path, body } = event.body;
   const { muxAccessTokenId, muxAccessTokenSecret } = context.appInstallationParameters;
 
-  const res = await muxFetch(
-    { tokenId: muxAccessTokenId, tokenSecret: muxAccessTokenSecret },
-    method,
-    path,
-    body
-  );
+  console.log(`[muxProxy] ${method} ${path}`, body ? `body length: ${body.length}` : 'no body');
+
+  if (!muxAccessTokenId || !muxAccessTokenSecret) {
+    console.error('[muxProxy] Missing Mux credentials in appInstallationParameters');
+    return { ok: false, error: 'Missing Mux API credentials', status: 401 };
+  }
+
+  let res: Response;
+  try {
+    res = await muxFetch(
+      { tokenId: muxAccessTokenId, tokenSecret: muxAccessTokenSecret },
+      method,
+      path,
+      body
+    );
+  } catch (err) {
+    console.error(`[muxProxy] Network error on ${method} ${path}:`, err);
+    return { ok: false, error: 'Network error calling Mux API', status: 502 };
+  }
+
+  console.log(`[muxProxy] ${method} ${path} → ${res.status}`);
 
   if (!res.ok) {
     const errorBody = await res.json().catch(() => ({}));
+    const errorMessage = errorBody?.error?.messages?.[0] || 'Unknown error';
+    console.error(`[muxProxy] Error ${res.status} on ${method} ${path}: ${errorMessage}`);
     return {
       ok: false,
-      error: errorBody?.error?.messages?.[0] || 'Unknown error',
+      error: errorMessage,
       status: res.status,
     };
   }
