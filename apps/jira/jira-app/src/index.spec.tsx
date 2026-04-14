@@ -106,6 +106,27 @@ vi.mock('./jiraClient', async () => {
           },
         ],
       });
+    static getMyself = vi.fn(() =>
+      Promise.resolve({ error: false, user: { displayName: 'Test User' } })
+    );
+    static getProjectById = vi.fn(() =>
+      Promise.resolve({
+        error: false,
+        project: {
+          id: '10000',
+          key: 'extensibility',
+          name: 'Project name 2',
+          avatarUrls: {},
+          expand: '',
+          isPrivate: false,
+          projectTypeKey: 'software',
+          properties: {},
+          self: '',
+          simplified: false,
+          style: 'classic',
+        },
+      })
+    );
   };
   return {
     default: jiraClient,
@@ -113,6 +134,28 @@ vi.mock('./jiraClient', async () => {
 });
 
 const originalStorage = window.localStorage;
+
+const linkedIssue = {
+  issuetype: {
+    name: 'Story',
+    iconUrl: 'https://example.com/icon.png',
+  },
+  status: {
+    name: 'To Do',
+    statusCategory: {
+      colorName: 'medium-gray',
+    },
+  },
+  key: 'MKE-1234',
+  assignee: {
+    displayName: 'Dean Anderson',
+    avatarUrls: {
+      '24x24': 'https://example.com/avatar.png',
+    },
+  },
+  summary: 'Test issue 1',
+  link: 'https://contentful.atlassian.net/browse/MKE-1234',
+};
 
 describe('The Jira App Components', () => {
   let mockSdk: any = {};
@@ -123,6 +166,7 @@ describe('The Jira App Components', () => {
     vi.useFakeTimers();
     window.open = vi.fn();
     Object.defineProperty(window, 'localStorage', { writable: true, value: originalStorage });
+    window.sessionStorage.clear();
 
     Date.now = vi.fn(() => 100);
     Math.random = vi.fn(() => 0.5);
@@ -388,7 +432,7 @@ describe('The Jira App Components', () => {
     it('should show an empty list when the resource returns nothing', async () => {
       // overwrite the default mock value to return nothing
       fetchMock.get(
-        'https://api.atlassian.com/ex/jira/cloud-id/rest/api/2/search?jql=issue.property%5BcontentfulLink%5D.records%20%3D%20%22ctf%3Atest-space%3Amaster%3Aundefined%22',
+        'https://api.atlassian.com/ex/jira/cloud-id/rest/api/3/search/jql?jql=issue.property%5BcontentfulLink%5D.records%20%3D%20%22ctf%3Atest-space%3Amaster%3Aundefined%22&fields=summary%2Cpriority%2Cassignee%2Cstatus%2Cissuetype',
         { issues: [] },
         {
           overwriteRoutes: true,
@@ -424,10 +468,84 @@ describe('The Jira App Components', () => {
       expect(wrapper).toBeDefined();
     });
 
+    it('should keep a newly linked issue visible while Jira search catches up after remount', async () => {
+      const client = {
+        getIssuesForEntry: vi.fn(() => Promise.resolve({ issues: [], error: null })),
+        searchIssues: vi.fn(() => Promise.resolve({ issues: [linkedIssue] })),
+        addContentfulLink: vi.fn(() => Promise.resolve(true)),
+        removeContentfulLink: vi.fn(),
+      } as unknown as JiraClient;
+
+      const firstRender = render(<Jira sdk={mockSdk} client={client} signOut={() => {}} />);
+
+      fireEvent.change(firstRender.getByTestId('jira-issue-search'), {
+        target: { value: 'MKE-1234' },
+      });
+
+      await wait(() => {
+        firstRender.getByTestId('search-result-issue');
+      });
+
+      fireEvent.click(firstRender.getByTestId('search-result-issue'));
+
+      await wait(() => {
+        firstRender.getByText('Test issue 1');
+      });
+
+      firstRender.unmount();
+
+      const secondRender = render(<Jira sdk={mockSdk} client={client} signOut={() => {}} />);
+
+      await wait(() => {
+        secondRender.getByText('Test issue 1');
+      });
+
+      expect(client.getIssuesForEntry).toHaveBeenCalled();
+    });
+
+    it('should not duplicate contentful links when linking the same entry twice', async () => {
+      const { default: ActualJiraClient } = await vi.importActual<typeof import('./jiraClient')>(
+        './jiraClient'
+      );
+      const actualJiraClient = new ActualJiraClient(
+        '123',
+        '1000',
+        'cloud-id',
+        'contentful.atlassian.net',
+        unauthHandler
+      );
+
+      fetchMock.get(
+        'https://api.atlassian.com/ex/jira/cloud-id/rest/api/3/issue/MKE-1389/properties/contentfulLink',
+        {
+          value: {
+            records: ['ctf:test-space:master:undefined', 'ctf:test-space:master:undefined'],
+          },
+        },
+        { overwriteRoutes: true }
+      );
+
+      fetchMock.put(
+        'https://api.atlassian.com/ex/jira/cloud-id/rest/api/3/issue/MKE-1389/properties/contentfulLink',
+        200,
+        { overwriteRoutes: true }
+      );
+
+      await actualJiraClient.addContentfulLink(mockSdk.ids, 'MKE-1389');
+
+      const [, putOptions] = fetchMock.lastCall(
+        'https://api.atlassian.com/ex/jira/cloud-id/rest/api/3/issue/MKE-1389/properties/contentfulLink'
+      )!;
+
+      expect(JSON.parse((putOptions as RequestInit).body as string)).toEqual({
+        records: ['ctf:test-space:master:undefined'],
+      });
+    });
+
     it('should show an unauthorized message when given a 403', async () => {
       // overwrite the default mock value to return nothing
       fetchMock.get(
-        'https://api.atlassian.com/ex/jira/cloud-id/rest/api/2/search?jql=issue.property%5BcontentfulLink%5D.records%20%3D%20%22ctf%3Atest-space%3Amaster%3Aundefined%22',
+        'https://api.atlassian.com/ex/jira/cloud-id/rest/api/3/search/jql?jql=issue.property%5BcontentfulLink%5D.records%20%3D%20%22ctf%3Atest-space%3Amaster%3Aundefined%22&fields=summary%2Cpriority%2Cassignee%2Cstatus%2Cissuetype',
         403,
         {
           overwriteRoutes: true,

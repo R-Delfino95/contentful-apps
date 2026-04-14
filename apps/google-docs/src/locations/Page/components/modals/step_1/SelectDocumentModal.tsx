@@ -1,5 +1,5 @@
 import { useEffect, useRef, useCallback } from 'react';
-import { useGoogleDocsPicker } from '../../../../../hooks/useGoogleDocPicker';
+import { useGoogleDocsPicker } from '@hooks/useGoogleDocPicker';
 
 interface SelectDocumentModalProps {
   oauthToken: string;
@@ -57,7 +57,7 @@ export default function SelectDocumentModal({
     }
   }, [isOpen, oauthToken]);
 
-  // This component no longer renders a modal since the Google Picker
+  // This component no longer renders a modal since the file picker
   // opens as a separate popup. Return null as there's nothing to render.
   return null;
 }

@@ -282,6 +282,16 @@ export class App extends React.Component<AppProps, AppState> {
     return this.state.value && this.state.value.drmPlaybackId ? true : false;
   };
 
+  isPlayerReady = (): boolean => {
+    if (!this.state.playerPlaybackId) return false;
+
+    const isPublicReady = !!this.state.value?.ready && !!this.state.value?.playbackId;
+    const isSignedReady =
+      this.isUsingSigned() && !this.state.isTokenLoading && !!this.state.playbackToken;
+
+    return isPublicReady || isSignedReady;
+  };
+
   getSwitchCheckedState = (): boolean => {
     // If there are pending actions of playback, use the state of the pending action
     if (this.state.value?.pendingActions?.create) {
@@ -495,7 +505,6 @@ export class App extends React.Component<AppProps, AppState> {
       return tokens;
     } catch (e) {
       console.error(e);
-      this.setState({ isTokenLoading: false });
       return {
         licenseToken: undefined,
         playbackToken: 'playback-token-not-found',
@@ -520,7 +529,13 @@ export class App extends React.Component<AppProps, AppState> {
     const { playbackToken, posterToken, storyboardToken, licenseToken } =
       await this.fetchSignedTokens(signedPlaybackId, isDRM);
 
-    this.setState({ playbackToken, posterToken, storyboardToken, drmLicenseToken: licenseToken });
+    this.setState({
+      playbackToken,
+      posterToken,
+      storyboardToken,
+      drmLicenseToken: licenseToken,
+      isTokenLoading: false,
+    });
   };
 
   getAsset = async (assetId: string) => {
@@ -1222,9 +1237,7 @@ export class App extends React.Component<AppProps, AppState> {
     ) {
       const { muxDomain } = this.props.sdk.parameters.installation as InstallationParams;
 
-      const showPlayer =
-        (this.state.value.ready && this.state.value.playbackId) ||
-        (this.isUsingSigned() && !this.state.isTokenLoading);
+      const showPlayer = this.isPlayerReady();
 
       return (
         <>
@@ -1310,17 +1323,16 @@ export class App extends React.Component<AppProps, AppState> {
               </Box>
             )}
 
-            <section
-              className="player"
-              style={{ ...this.getPlayerAspectRatio(), display: showPlayer ? undefined : 'none' }}>
-              {this.state.playerPlaybackId !== 'playback-test-123' && (
+            {showPlayer && (
+              <section
+                className="player"
+                style={this.getPlayerAspectRatio()}>
                 <MuxPlayer
                   ref={this.muxPlayerRef}
                   data-testid="muxplayer"
                   style={{ height: '100%', width: '100%' }}
                   playbackId={this.state.playerPlaybackId}
                   streamType={this.getPlayerType()}
-                  poster={this.state.value.audioOnly ? '#' : undefined}
                   customDomain={muxDomain && muxDomain !== 'mux.com' ? muxDomain : undefined}
                   audio={this.state.value.audioOnly}
                   metadata={{
@@ -1339,8 +1351,8 @@ export class App extends React.Component<AppProps, AppState> {
                       : undefined
                   }
                 />
-              )}
-            </section>
+              </section>
+            )}
 
             {showPlayer && this.isLive() && (
               <Box marginBottom="spacingM" marginTop="spacingM">
