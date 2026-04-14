@@ -7,32 +7,38 @@ import {
 import { muxFetch } from './helpers/muxClient';
 
 type Parameters = {
-  requestBody: Record<string, any>;
+  method: 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH';
+  path: string;
+  body?: string;
 };
 
 export const handler: FunctionEventHandler<FunctionTypeEnum.AppActionCall> = async (
   event: AppActionRequest<'Custom', Parameters>,
   context: FunctionEventContext
 ) => {
-  const { requestBody } = event.body;
+  const { method, path, body } = event.body;
   const { muxAccessTokenId, muxAccessTokenSecret } = context.appInstallationParameters;
 
   const res = await muxFetch(
     { tokenId: muxAccessTokenId, tokenSecret: muxAccessTokenSecret },
-    'POST',
-    '/video/v1/assets',
-    JSON.stringify(requestBody)
+    method,
+    path,
+    body
   );
 
-  const body = await res.json();
-
   if (!res.ok) {
+    const errorBody = await res.json().catch(() => ({}));
     return {
       ok: false,
-      error: body.error?.messages?.[0] || 'Unknown error',
+      error: errorBody?.error?.messages?.[0] || 'Unknown error',
       status: res.status,
     };
   }
 
-  return { ok: true, data: body };
+  if (res.status === 204) {
+    return { ok: true, data: {} };
+  }
+
+  const responseBody = await res.json();
+  return { ok: true, data: responseBody };
 };

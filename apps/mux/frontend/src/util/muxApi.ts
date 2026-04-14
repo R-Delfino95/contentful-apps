@@ -122,34 +122,47 @@ export class MuxApiService {
     return parsed.data as T;
   }
 
+  private async callProxy<T>(
+    method: 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH',
+    path: string,
+    body?: string
+  ): Promise<T> {
+    return this.callAction<T>('muxProxy', { method, path, body });
+  }
+
   // --- Asset operations ---
 
   async getAsset(assetId: string): Promise<any> {
-    return this.callAction('getAsset', { assetId });
+    return this.callProxy('GET', `/video/v1/assets/${assetId}`);
   }
 
   async createAsset(requestBody: any): Promise<any> {
-    return this.callAction('createAsset', { requestBody });
+    return this.callProxy('POST', '/video/v1/assets', JSON.stringify(requestBody));
   }
 
   // --- Upload operations ---
 
   async createUpload(requestBody: any): Promise<{ id: string; url: string }> {
-    return this.callAction('createUpload', { requestBody });
+    const result = await this.callProxy<{ data: { id: string; url: string } }>(
+      'POST',
+      '/video/v1/uploads',
+      JSON.stringify(requestBody)
+    );
+    return result.data;
   }
 
   async getUpload(uploadId: string): Promise<any> {
-    return this.callAction('getUpload', { uploadId });
+    return this.callProxy('GET', `/video/v1/uploads/${uploadId}`);
   }
 
   // --- Static rendition operations ---
 
   async deleteStaticRendition(assetId: string, staticRenditionId: string): Promise<void> {
-    await this.callAction('deleteStaticRendition', { assetId, staticRenditionId });
+    await this.callProxy('DELETE', `/video/v1/assets/${assetId}/static-renditions/${staticRenditionId}`);
   }
 
   async createStaticRendition(assetId: string, resolution: ResolutionType): Promise<void> {
-    await this.callAction('createStaticRendition', { assetId, resolution });
+    await this.callProxy('POST', `/video/v1/assets/${assetId}/static-renditions`, JSON.stringify({ resolution }));
   }
 
   // --- Track operations ---
@@ -165,11 +178,11 @@ export class MuxApiService {
       closed_captions?: boolean;
     }
   ): Promise<any> {
-    return this.callAction('createTrack', { assetId, trackOptions: options });
+    return this.callProxy('POST', `/video/v1/assets/${assetId}/tracks`, JSON.stringify(options));
   }
 
   async deleteTrack(assetId: string, trackId: string): Promise<void> {
-    await this.callAction('deleteTrack', { assetId, trackId });
+    await this.callProxy('DELETE', `/video/v1/assets/${assetId}/tracks/${trackId}`);
   }
 
   async generateSubtitles(
@@ -177,25 +190,19 @@ export class MuxApiService {
     trackId: string,
     options: { language_code: string; name: string }
   ): Promise<any> {
-    return this.callAction('generateSubtitles', { assetId, trackId, options });
-  }
-
-  // --- Signing key operations (credentials passed as params for config page) ---
-
-  async getSigningKey(params: {
-    muxAccessTokenId: string;
-    muxAccessTokenSecret: string;
-    signingKeyId: string;
-  }): Promise<boolean> {
-    const result = await this.callAction<{ exists: boolean }>('getSigningKey', params);
-    return result.exists;
-  }
-
-  async createSigningKey(params: {
-    muxAccessTokenId: string;
-    muxAccessTokenSecret: string;
-  }): Promise<{ id: string; private_key: string }> {
-    return this.callAction('createSigningKey', params);
+    const body = JSON.stringify({
+      generated_subtitles: [
+        {
+          language_code: options.language_code,
+          name: options.name,
+        },
+      ],
+    });
+    return this.callProxy(
+      'POST',
+      `/video/v1/assets/${assetId}/tracks/${trackId}/generate-subtitles`,
+      body
+    );
   }
 
   // --- Signed URL tokens ---

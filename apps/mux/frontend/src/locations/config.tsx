@@ -13,8 +13,7 @@ import {
 } from '@contentful/dam-app-base';
 import MuxLogoSvg from '../images/mux-logo.svg';
 import './config.css';
-import { createClient, PlainClientAPI } from 'contentful-management';
-import { MuxApiService, MuxApiError } from '../util/muxApi';
+import ApiClient from '../util/apiClient';
 
 import {
   Checkbox,
@@ -57,8 +56,6 @@ interface IState {
 class Config extends React.Component<ConfigProps, IState> {
   app: AppConfigAPI;
   space: SpaceAPI;
-  cmaClient: PlainClientAPI;
-  muxApi!: MuxApiService;
 
   constructor(props: ConfigProps) {
     super(props);
@@ -73,21 +70,9 @@ class Config extends React.Component<ConfigProps, IState> {
     // `sdk.app` exposes all app-related methods.
     this.app = this.props.sdk.app;
     this.space = this.props.sdk.space;
-    this.cmaClient = createClient(
-      { apiAdapter: this.props.sdk.cmaAdapter },
-      {
-        type: 'plain',
-        defaults: {
-          environmentId: this.props.sdk.ids.environmentAlias ?? this.props.sdk.ids.environment,
-          spaceId: this.props.sdk.ids.space,
-        },
-      }
-    );
   }
 
   async componentDidMount() {
-    this.muxApi = await MuxApiService.getInstance(this.cmaClient, this.props.sdk);
-
     this.app.onConfigure(() => this.onConfigure());
     // Get current parameters of the app.
     const [parameters, eisRes, contentTypesRes] = await Promise.all([
@@ -142,16 +127,15 @@ class Config extends React.Component<ConfigProps, IState> {
 
   haveValidSigningKeys = async () => {
     if (!(this.state.parameters.muxSigningKeyId && this.state.parameters.muxSigningKeyPrivate))
-      return false;
-    try {
-      return await this.muxApi.getSigningKey({
-        muxAccessTokenId: this.state.parameters.muxAccessTokenId!,
-        muxAccessTokenSecret: this.state.parameters.muxAccessTokenSecret!,
-        signingKeyId: this.state.parameters.muxSigningKeyId!,
-      });
-    } catch {
-      return false;
-    }
+      return;
+    const apiClient = new ApiClient(
+      this.state.parameters.muxAccessTokenId!,
+      this.state.parameters.muxAccessTokenSecret!
+    );
+    const signingKeyExists = await apiClient
+      .get(`/video/v1/signing-keys/${this.state.parameters.muxSigningKeyId}`)
+      .then((res) => res.status === 200);
+    return signingKeyExists;
   };
 
   haveApiCredentials = () => {
@@ -199,29 +183,33 @@ class Config extends React.Component<ConfigProps, IState> {
       return;
     }
 
+    const apiClient = new ApiClient(
+      this.state.parameters.muxAccessTokenId!,
+      this.state.parameters.muxAccessTokenSecret!
+    );
     this.setState({ isEnablingSignedUrls: true });
+    let res;
     try {
-      const signingKey = await this.muxApi.createSigningKey({
-        muxAccessTokenId: this.state.parameters.muxAccessTokenId!,
-        muxAccessTokenSecret: this.state.parameters.muxAccessTokenSecret!,
-      });
-      this.setState({
-        isEnablingSignedUrls: false,
-        parameters: {
-          ...this.state.parameters,
-          muxSigningKeyId: signingKey.id,
-          muxSigningKeyPrivate: signingKey.private_key,
-          muxEnableSignedUrls: true,
-        },
-      });
+      res = await apiClient.post('/video/v1/signing-keys');
     } catch (e) {
-      this.setState({ isEnablingSignedUrls: false });
-      if (e instanceof MuxApiError && e.status === 401) {
-        this.props.sdk.notifier.error('It looks like your access token or secret is incorrect');
-      } else {
-        this.props.sdk.notifier.error('Error creating signing keys, please refresh and try again');
-      }
+      this.props.sdk.notifier.error('Error creating signing keys, please refresh and try again');
+      return;
     }
+    if (res.status === 401) {
+      this.props.sdk.notifier.error('It looks like your access token or secret is incorrect');
+      return;
+    }
+    const json = await res.json();
+    const { data: signingKey } = json;
+    this.setState({
+      isEnablingSignedUrls: false,
+      parameters: {
+        ...this.state.parameters,
+        muxSigningKeyId: signingKey.id,
+        muxSigningKeyPrivate: signingKey.private_key,
+        muxEnableSignedUrls: true,
+      },
+    });
   };
 
   // Renders the UI of the app.
