@@ -12,9 +12,9 @@ import { SelectTabsModal } from '../modals/step_3/SelectTabsModal';
 import {
   DocumentTabProps,
   MappingReviewSuspendPayload,
+  PreviewPayload,
   ResumePayload,
   TabsImagesSuspendPayload,
-  PreviewPayload,
   RunStatus,
   WorkflowRunResult,
 } from '@types';
@@ -24,9 +24,6 @@ import { useWorkflowAgent } from '@hooks/useWorkflowAgent';
 
 export interface ModalOrchestratorHandle {
   startFlow: () => void;
-  /** Clears in-progress flow state without calling `onResetToMain` (parent clears preview separately). */
-  resetFlowState: () => void;
-  resumeMappingReview: (payload: MappingReviewSuspendPayload) => Promise<void>;
 }
 
 enum FlowStep {
@@ -39,13 +36,12 @@ enum FlowStep {
 interface ModalOrchestratorProps {
   sdk: PageAppSDK;
   oauthToken: string;
-  onPreviewReady: (payload: PreviewPayload) => void;
-  onResetToMain: () => void;
   onMappingReviewReady: (payload: MappingReviewSuspendPayload) => void;
+  onResetToMain: () => void;
 }
 
 export const ModalOrchestrator = forwardRef<ModalOrchestratorHandle, ModalOrchestratorProps>(
-  ({ sdk, oauthToken, onPreviewReady, onMappingReviewReady, onResetToMain }, ref) => {
+  ({ sdk, oauthToken, onMappingReviewReady, onResetToMain }, ref) => {
     const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
     const [isConfirmCancelModalOpen, setIsConfirmCancelModalOpen] = useState(false);
     const [isErrorPreviewModalOpen, setIsErrorPreviewModalOpen] = useState(false);
@@ -68,24 +64,6 @@ export const ModalOrchestrator = forwardRef<ModalOrchestratorHandle, ModalOrches
 
     useImperativeHandle(ref, () => ({
       startFlow: () => setIsUploadModalOpen(true),
-      resetFlowState: () => {
-        resetProgress();
-        setIsConfirmCancelModalOpen(false);
-        setIsErrorPreviewModalOpen(false);
-      },
-      resumeMappingReview: async (payload: MappingReviewSuspendPayload) => {
-        if (!activeRunId) {
-          throw new Error('Workflow run id is missing for resume.');
-        }
-
-        // TODO : modify the normalized document and entry block graph with the edited values
-        const workflowRun = await resumeWorkflow(activeRunId, {
-          editedNormalizedDocument: payload.normalizedDocument,
-          entryBlockGraph: payload.entryBlockGraph,
-        });
-
-        handleWorkflowResult(workflowRun);
-      },
     }));
 
     const resetDocumentScopeReview = () => {
@@ -172,7 +150,6 @@ export const ModalOrchestrator = forwardRef<ModalOrchestratorHandle, ModalOrches
         return;
       }
 
-      onPreviewReady(workflowRun.googleDocPayload);
       setFlowStep(null);
     };
 
@@ -319,7 +296,6 @@ export const ModalOrchestrator = forwardRef<ModalOrchestratorHandle, ModalOrches
           onClose={closeModalAndReset(setIsErrorPreviewModalOpen)}
           title="Unable to generate preview"
           message={ERROR_MESSAGES.GENERIC_ERROR}
-          onTryAgain={() => setIsErrorPreviewModalOpen(false)}
         />
       </>
     );
