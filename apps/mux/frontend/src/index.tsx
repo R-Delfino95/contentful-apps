@@ -203,6 +203,15 @@ export class App extends React.Component<AppProps, AppState> {
       const justNow = !initialSys.publishedAt || initialSys.publishedAt !== newSys.publishedAt;
 
       if (wasPublished && justNow) {
+        // If there are pendingActions, the onPublish function will handle
+        // the Mux API changes and update+publish the entry when done.
+        // Resyncing now would read stale Mux data and cause version conflicts.
+        // The publish triggered by onPublish will fire this handler again
+        // (without pendingActions), doing a clean resync at that point.
+        const currentValue = this.props.sdk.field.getValue();
+        if (currentValue?.pendingActions) {
+          return;
+        }
         await this.resync();
       }
     });
