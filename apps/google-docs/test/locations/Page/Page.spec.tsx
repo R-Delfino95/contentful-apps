@@ -53,7 +53,7 @@ vi.mock('../../../src/locations/Page/components/mainpage/ModalOrchestrator', () 
   ModalOrchestrator: require('react').forwardRef(
     (
       props: {
-        onMappingReviewReady: (payload: MappingReviewSuspendPayload) => void;
+        onMappingReviewReady: (payload: MappingReviewSuspendPayload, runId: string) => void;
         onResetToMain: () => void;
         oauthToken: string;
       },
@@ -74,7 +74,7 @@ vi.mock('../../../src/locations/Page/components/mainpage/ModalOrchestrator', () 
       return (
         <>
           <button
-            onClick={() => props.onMappingReviewReady(mappingReviewPayloadMock)}
+            onClick={() => props.onMappingReviewReady(mappingReviewPayloadMock, 'run-123')}
             type="button">
             Trigger Mapping Review Ready
           </button>
