@@ -12,8 +12,22 @@ export interface EditLocationOption {
   isSelected?: boolean;
 }
 
+export interface EditModalFieldOption {
+  id: string;
+  fieldName: string;
+  fieldType: string;
+}
+
+export interface EditModalFieldMapping {
+  fieldId: string;
+}
+
 export interface EditModalNewLocation {
+  id: string;
   title: string;
+  fieldOptions: EditModalFieldOption[];
+  fieldMappings: EditModalFieldMapping[];
+  selectedFieldIds?: string[];
 }
 
 export interface EditModalContent {

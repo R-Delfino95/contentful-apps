@@ -123,10 +123,28 @@ describe('EditModal', () => {
           ...viewModel,
           newLocations: [
             {
+              id: 'page-event-detail',
               title: "Page: Event detail (Don't enter NRF uncaffeinated.)",
+              fieldMappings: [],
+              fieldOptions: [
+                {
+                  id: 'title',
+                  fieldName: 'Title',
+                  fieldType: 'Short text',
+                },
+              ],
             },
             {
+              id: 'component-resource-detail-hero',
               title: "Component: Resource detail hero (Don't enter NRF uncaffeinated.)",
+              fieldMappings: [{ fieldId: 'headline' }],
+              fieldOptions: [
+                {
+                  id: 'headline',
+                  fieldName: 'Headline',
+                  fieldType: 'Short text',
+                },
+              ],
             },
           ],
         }}
