@@ -69,12 +69,10 @@ export interface WorkflowContentType {
   fields: WorkflowContentTypeField[];
 }
 
-export interface PreviewPayload {
+export interface CompletedWorkflowPayload {
   entries: EntryToCreate[];
   assets: AssetToCreate[];
   referenceGraph: ReviewedReferenceGraph;
-  normalizedDocument: NormalizedDocument;
-  entryBlockGraph?: EntryBlockGraph;
 }
 
 export interface TabsImagesSuspendPayload {
@@ -113,7 +111,7 @@ export type WorkflowRunResult =
       status: RunStatus.COMPLETED;
       runId: string;
       messages: AgentRunMessage[];
-      googleDocPayload: PreviewPayload;
+      googleDocPayload: CompletedWorkflowPayload;
     };
 
 export interface ResumePayload {

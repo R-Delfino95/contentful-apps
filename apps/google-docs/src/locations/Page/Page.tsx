@@ -97,8 +97,11 @@ const Page = () => {
       <Layout withBoxShadow={true} offsetTop={10}>
         {mappingReviewState ? (
           <ReviewPage
+            sdk={sdk}
             payload={mappingReviewState.payload}
+            runId={mappingReviewState.runId}
             onCancelReview={handleCancelMappingReview}
+            onReturnToMainPage={handleReturnToMainPage}
           />
         ) : (
           <>

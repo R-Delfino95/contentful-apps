@@ -5,7 +5,7 @@ import {
   MappingReviewSuspendPayload,
   ResumePayload,
   TabsImagesSuspendPayload,
-  PreviewPayload,
+  CompletedWorkflowPayload,
   WorkflowRunResult,
   RunStatus,
 } from '@types';
@@ -16,7 +16,7 @@ import {
   resumeWorkflowRun,
   startAgentRun,
 } from '../services/agents-api';
-import { validatePayloadShape } from '../utils/previewPayload';
+import { validatePayloadShape } from '../utils/createEntries';
 
 interface UseWorkflowParams {
   sdk: PageAppSDK;
@@ -56,7 +56,7 @@ const getAgentPayload = (runData: AgentRunData): string | null => {
   return textPart?.text || null;
 };
 
-const previewPayloadFromCompletedRun = (runData: AgentRunData): PreviewPayload => {
+const previewPayloadFromCompletedRun = (runData: AgentRunData): CompletedWorkflowPayload => {
   const googleDocPayload = runData.metadata?.googleDocPayload;
   if (googleDocPayload == null) {
     throw new Error('Workflow completed but result payload was missing.');
@@ -84,12 +84,6 @@ const previewPayloadFromCompletedRun = (runData: AgentRunData): PreviewPayload =
       entries: [],
       assets: [],
       referenceGraph: {},
-      normalizedDocument: {
-        documentId,
-        title,
-        contentBlocks: [],
-        tables: [],
-      },
     };
   }
 
