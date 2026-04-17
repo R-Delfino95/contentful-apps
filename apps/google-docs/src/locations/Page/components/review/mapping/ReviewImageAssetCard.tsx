@@ -62,10 +62,10 @@ export function ReviewImageAssetCard({
       <Card
         ariaLabel={title}
         actions={[
-          <MenuItem key="assigned" onClick={onAssign}>
+          <MenuItem key="assigned" onClick={onAssign} isDisabled>
             Assign
           </MenuItem>,
-          <MenuItem key="exclude" onClick={onExclude}>
+          <MenuItem key="exclude" onClick={onExclude} isDisabled>
             Exclude
           </MenuItem>,
         ]}>
