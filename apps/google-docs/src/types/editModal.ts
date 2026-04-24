@@ -11,6 +11,7 @@ export interface EditLocationOption {
   fieldType: string;
   sourceRef: SourceRef;
   sourceRefs?: SourceRef[];
+  mappingKeys?: string[];
   isSelected?: boolean;
 }
 
@@ -18,6 +19,7 @@ export interface EditModalFieldOption {
   id: string;
   fieldName: string;
   fieldDisplayType: string;
+  fieldType: string;
   isAssetField?: boolean;
 }
 

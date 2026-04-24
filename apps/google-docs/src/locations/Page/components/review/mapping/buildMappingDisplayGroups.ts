@@ -50,22 +50,6 @@ function buildDraftMappingCards(
   highlights: MappingHighlight[],
   resolveFieldTypeLabel: (highlight: MappingHighlight) => string
 ): DraftMappingCard[] {
-  if (segment.kind === 'table') {
-    return highlights.map((highlight) => {
-      const mappingKey = getMappingCardKey(segment.id, highlight);
-      const fieldName = highlight.fieldName;
-
-      return {
-        key: `${segment.id}:${mappingKey}`,
-        fieldIdentity: getFieldIdentity(highlight),
-        fieldName,
-        fieldType: resolveFieldTypeLabel(highlight),
-        anchorId: getAnchorIdForSourceRef(highlight.sourceRef),
-        mappingKeys: [mappingKey],
-      };
-    });
-  }
-
   const byFieldIdentity = new Map<
     string,
     { firstHighlight: MappingHighlight; mappingKeys: string[] }
