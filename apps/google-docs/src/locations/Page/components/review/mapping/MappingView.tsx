@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type RefCallback } from 'react';
-import { Box, Flex, Text } from '@contentful/f36-components';
+import { Box, Flex, Note, Text } from '@contentful/f36-components';
 import tokens from '@contentful/f36-tokens';
 import {
   buildEntryListFromEntryBlockGraph,
@@ -13,8 +13,14 @@ import type {
   EditLocationOption,
   EditModalNewLocation,
   SourceRef,
+  TableTextSourceRef,
 } from '@types';
-import { isBlockImageSourceRef, isTableImageSourceRef, isTextSourceRef } from '@types';
+import {
+  isBlockImageSourceRef,
+  isTableImageSourceRef,
+  isTableTextSourceRef,
+  isTextSourceRef,
+} from '@types';
 import { FileTextIcon } from '@contentful/f36-icons';
 import { useReviewTextSelection } from '@hooks/useReviewTextSelection';
 import { getEntryTitleFromFieldMappings } from '../../../../../utils/getEntryTitle';
@@ -377,6 +383,7 @@ export const MappingView = ({
       fieldOptions,
       fieldMappings: entry.fieldMappings.map((fieldMapping) => ({
         fieldId: fieldMapping.fieldId,
+        sourceRefs: fieldMapping.sourceRefs,
       })),
     };
   };
@@ -453,9 +460,9 @@ export const MappingView = ({
       .map((card) => locationsByCardKey.get(card.key))
       .filter((location): location is EditLocationOption => Boolean(location));
 
-    return locations.map((location, index) => ({
+    return locations.map((location) => ({
       ...location,
-      isSelected: index === 0,
+      isSelected: false,
     }));
   };
 
@@ -633,7 +640,7 @@ export const MappingView = ({
       getLocationsForSelectedText(),
       {
         contentPreview: mappedPreview || trimmed,
-        previewSectionTitle: 'Text to exclude',
+        previewSectionTitle: 'Selected content',
       },
       selectionRange,
       previewSourceRefs
@@ -659,10 +666,10 @@ export const MappingView = ({
   };
 
   const handleEditModalConfirmPrimary = ({
-    selectedLocationId,
+    selectedLocationIds = [],
     selectedFieldIds = {},
   }: {
-    selectedLocationId: string | null;
+    selectedLocationIds?: string[];
     selectedFieldIds?: Record<string, string[]>;
   }) => {
     if (editModalState.mode === 'assign') {
@@ -713,7 +720,7 @@ export const MappingView = ({
         }
 
         const from =
-          locations.find((location) => location.id === selectedLocationId) ??
+          locations.find((location) => location.id === selectedLocationIds[0]) ??
           locations.find((location) => location.isSelected) ??
           locations[0];
 
@@ -736,7 +743,7 @@ export const MappingView = ({
 
       if (locations.length > 0) {
         const from =
-          locations.find((location) => location.id === selectedLocationId) ??
+          locations.find((location) => location.id === selectedLocationIds[0]) ??
           locations.find((location) => location.isSelected) ??
           locations[0];
 
@@ -849,50 +856,42 @@ export const MappingView = ({
     }
 
     const locations = editModalState.viewModel.currentLocations;
-    const selected =
-      locations.find((location) => location.id === selectedLocationId) ??
-      locations.find((location) => location.isSelected) ??
-      locations[0];
+    const selected = locations.filter((location) => selectedLocationIds.includes(location.id));
 
-    if (!selected) {
+    if (!selected.length) {
       closeEditModal();
       return;
     }
 
-    if (pendingImageSourceRef) {
-      onEntryBlockGraphChange(
-        applyImageExclusionToEntryBlockGraph(entryBlockGraph, selected, pendingImageSourceRef)
-      );
-    } else {
-      const selectedSourceRefKeys = new Set(
-        (selected.sourceRefs?.length ? selected.sourceRefs : [selected.sourceRef]).map(
-          (sourceRef) => buildSourceRefKey(sourceRef)
-        )
-      );
-      const matchingImageSourceRefs = pendingExcludeImageSourceRefs.filter((sourceRef) =>
-        selectedSourceRefKeys.has(buildSourceRefKey(sourceRef))
-      );
-
-      let nextGraph = entryBlockGraph;
-
-      if (pendingTextExclusionRanges?.length) {
-        nextGraph = applyTextExclusionToEntryBlockGraph(
-          nextGraph,
-          selected,
-          pendingTextExclusionRanges
+    let next = entryBlockGraph;
+    for (const location of selected) {
+      if (pendingImageSourceRef) {
+        next = applyImageExclusionToEntryBlockGraph(next, location, pendingImageSourceRef);
+      } else {
+        const selectedSourceRefKeys = new Set(
+          (location.sourceRefs?.length ? location.sourceRefs : [location.sourceRef]).map(
+            (sourceRef) => buildSourceRefKey(sourceRef)
+          )
         );
-      }
-
-      if (matchingImageSourceRefs.length) {
-        nextGraph = matchingImageSourceRefs.reduce(
-          (graph, sourceRef) => applyImageExclusionToEntryBlockGraph(graph, selected, sourceRef),
-          nextGraph
+        const matchingImageSourceRefs = pendingExcludeImageSourceRefs.filter((sourceRef) =>
+          selectedSourceRefKeys.has(buildSourceRefKey(sourceRef))
         );
-      }
 
-      if (nextGraph !== entryBlockGraph) {
-        onEntryBlockGraphChange(nextGraph);
+        if (pendingTextExclusionRanges?.length) {
+          next = applyTextExclusionToEntryBlockGraph(next, location, pendingTextExclusionRanges);
+        }
+
+        if (matchingImageSourceRefs.length) {
+          next = matchingImageSourceRefs.reduce(
+            (graph, sourceRef) => applyImageExclusionToEntryBlockGraph(graph, location, sourceRef),
+            next
+          );
+        }
       }
+    }
+
+    if (next !== entryBlockGraph) {
+      onEntryBlockGraphChange(next);
     }
 
     closeEditModal();
@@ -1053,19 +1052,48 @@ export const MappingView = ({
         onClose={closeEditModal}
         mode={editModalState.mode}
         viewModel={editModalState.viewModel}
-        isImageContent={Boolean(pendingImageReassignSourceRef)}
+        isImageContent={Boolean(pendingImageReassignSourceRef) || Boolean(pendingImageSourceRef)}
         title={editModalState.title}
         locationSectionDescription={editModalState.locationSectionDescription}
         primaryButtonLabel={editModalState.primaryButtonLabel}
-        additionalContent={
-          pendingPreviewSourceRefs.length || pendingPreviewHasTableContent ? (
+        additionalContent={(() => {
+          if (!pendingPreviewSourceRefs.length && !pendingPreviewHasTableContent) return undefined;
+          const allTableText = pendingPreviewSourceRefs.every(isTableTextSourceRef);
+          if (allTableText) {
+            const first = pendingPreviewSourceRefs[0] as TableTextSourceRef;
+            const singleCell = pendingPreviewSourceRefs.every(
+              (ref) =>
+                isTableTextSourceRef(ref) &&
+                ref.tableId === first.tableId &&
+                ref.rowId === first.rowId &&
+                ref.cellId === first.cellId
+            );
+            if (singleCell) return undefined;
+            const table = document.tables.find((t) => t.id === first.tableId);
+            const totalParts =
+              table?.rows.flatMap((r) => r.cells.flatMap((c) => c.parts)).length ?? 0;
+            const coveredParts = new Set(
+              pendingPreviewSourceRefs
+                .filter(isTableTextSourceRef)
+                .map((ref) => `${ref.rowId}:${ref.cellId}:${ref.partId}`)
+            ).size;
+            if (totalParts > 0 && coveredParts < totalParts) {
+              return (
+                <Note variant="warning">
+                  Partial table selections are not supported for rich text fields. Select the entire
+                  table or just from a single cell instead.
+                </Note>
+              );
+            }
+          }
+          return (
             <RichTextSelectionPreview
               document={document}
               sourceRefs={pendingPreviewSourceRefs}
               showTablePlaceholder={pendingPreviewHasTableContent}
             />
-          ) : undefined
-        }
+          );
+        })()}
         onConfirmPrimary={handleEditModalConfirmPrimary}
       />
     </>

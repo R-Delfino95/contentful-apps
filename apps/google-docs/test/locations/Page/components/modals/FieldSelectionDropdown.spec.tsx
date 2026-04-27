@@ -13,7 +13,20 @@ describe('FieldSelectionDropdown', () => {
     render(
       <FieldSelectionDropdown
         selectedText="+5 "
-        fieldMappings={[{ fieldId: 'name' }]}
+        fieldMappings={[
+          {
+            fieldId: 'name',
+            sourceRefs: [
+              {
+                type: 'blockText' as const,
+                blockId: 'block-1',
+                start: 0,
+                end: 5,
+                flattenedRuns: [],
+              },
+            ],
+          },
+        ]}
         fieldOptions={[
           {
             id: 'name',
