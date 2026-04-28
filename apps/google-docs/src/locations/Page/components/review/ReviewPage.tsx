@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Button, Flex, Heading, Layout } from '@contentful/f36-components';
 import tokens from '@contentful/f36-tokens';
 import { PageAppSDK } from '@contentful/app-sdk';
@@ -30,6 +30,7 @@ export const ReviewPage = ({
   onCancelReview,
   onExitReview,
 }: ReviewPageProps) => {
+  const [reviewMode, setReviewMode] = useState<'single' | 'all'>('all');
   const [isConfirmCancelModalOpen, setIsConfirmCancelModalOpen] = useState(false);
   const [selectedEntryIndex, setSelectedEntryIndex] = useState<number>(0);
   const [isCancelling, setIsCancelling] = useState(false);
@@ -37,6 +38,7 @@ export const ReviewPage = ({
   const [createdEntries, setCreatedEntries] = useState<EntryProps[] | null>(null);
   const [isSummaryModalOpen, setIsSummaryModalOpen] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
+  const reviewHeaderRef = useRef<HTMLDivElement | null>(null);
   const [entryBlockGraph, setEntryBlockGraph] = useState<EntryBlockGraph>(() =>
     structuredClone(payload.entryBlockGraph)
   );
@@ -45,6 +47,8 @@ export const ReviewPage = ({
   // alone or user edits would be wiped when the parent re-renders with a new object reference.
   useEffect(() => {
     setEntryBlockGraph(structuredClone(payload.entryBlockGraph));
+    setReviewMode('all');
+    setSelectedEntryIndex(0);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- only re-init on run identity
   }, [runId, payload.documentId]);
 
@@ -95,6 +99,7 @@ export const ReviewPage = ({
         }
 
         setCreatedEntries(entries);
+        setReviewMode('all');
         setIsSummaryModalOpen(true);
         return;
       }
@@ -134,6 +139,19 @@ export const ReviewPage = ({
     void handleCreateEntries();
   }, [hasCreatedEntries, handleCreateEntries]);
 
+  const handleViewAllMappings = useCallback(() => {
+    setReviewMode('all');
+  }, []);
+
+  const handleEditMode = useCallback(() => {
+    setReviewMode('single');
+  }, []);
+
+  const handleSelectEntryIndex = useCallback((index: number) => {
+    setSelectedEntryIndex(index);
+    setReviewMode('single');
+  }, []);
+
   const handleCancelOrExitReview = useCallback(() => {
     if (hasCreatedEntries) {
       onExitReview();
@@ -153,25 +171,31 @@ export const ReviewPage = ({
 
   return (
     <>
-      <Layout.Header title="Preview">
-        <Flex justifyContent="space-between" alignItems="center" marginTop="spacingS">
-          <Heading marginBottom="none">{title}</Heading>
-          <Button
-            variant="transparent"
-            size="small"
-            onClick={handleCancelOrExitReview}
-            aria-label={hasCreatedEntries ? 'Exit review' : 'Cancel review'}>
-            {hasCreatedEntries ? 'Exit' : 'Cancel'}
-          </Button>
-        </Flex>
-      </Layout.Header>
-      <Splitter marginTop="spacingS" />
+      <div ref={reviewHeaderRef}>
+        <Layout.Header title="Preview">
+          <Flex justifyContent="space-between" alignItems="center" marginTop="spacingS">
+            <Heading marginBottom="none">{title}</Heading>
+            <Button
+              variant="transparent"
+              size="small"
+              onClick={handleCancelOrExitReview}
+              aria-label={hasCreatedEntries ? 'Exit review' : 'Cancel review'}>
+              {hasCreatedEntries ? 'Exit' : 'Cancel'}
+            </Button>
+          </Flex>
+        </Layout.Header>
+        <Splitter marginTop="spacingS" />
+      </div>
       <Layout.Body>
         <Flex flexDirection="column" gap="spacingM" style={{ padding: tokens.spacingL }}>
           <OverviewSection
             payload={reviewPayload}
-            selectedEntryIndex={selectedEntryIndex}
-            onSelectEntryIndex={setSelectedEntryIndex}
+            selectedEntryIndex={reviewMode === 'all' ? null : selectedEntryIndex}
+            onSelectEntryIndex={handleSelectEntryIndex}
+            onViewAllMappings={handleViewAllMappings}
+            onEditMode={handleEditMode}
+            isViewingAllMappings={reviewMode === 'all'}
+            canEditMappings={!hasCreatedEntries}
             ctaLabel={hasCreatedEntries ? 'View entries' : 'Create entries'}
             onCtaClick={handleCreateOrViewEntries}
             isCtaLoading={isCreatePending}
@@ -180,8 +204,10 @@ export const ReviewPage = ({
             payload={reviewPayload}
             entryBlockGraph={entryBlockGraph}
             onEntryBlockGraphChange={setEntryBlockGraph}
-            selectedEntryIndex={selectedEntryIndex}
+            selectedEntryIndex={reviewMode === 'all' ? null : selectedEntryIndex}
             isDisabled={isMappingDisabled}
+            occludingTopRef={reviewHeaderRef}
+            reviewMode={reviewMode}
           />
         </Flex>
       </Layout.Body>

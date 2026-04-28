@@ -17,6 +17,10 @@ interface ReviewDocumentBodyProps {
   onSetHoveredMappingKeys: (keys: string[]) => void;
   onAssignImage: (sourceRef: ImageSourceRef, label: string) => void;
   onExcludeImage: (sourceRef: ImageSourceRef, label: string) => void;
+  readOnly?: boolean;
+  showReadOnlyOutline?: boolean;
+  preferImageReadOnlyHighlight?: boolean;
+  suppressInlineHighlights?: boolean;
 }
 
 export const NormalizedDocumentSection = ({
@@ -30,6 +34,10 @@ export const NormalizedDocumentSection = ({
   onSetHoveredMappingKeys,
   onAssignImage,
   onExcludeImage,
+  readOnly = false,
+  showReadOnlyOutline = true,
+  preferImageReadOnlyHighlight = false,
+  suppressInlineHighlights = false,
 }: ReviewDocumentBodyProps): JSX.Element => {
   return (
     <Box style={{ flex: 2 }}>
@@ -52,6 +60,10 @@ export const NormalizedDocumentSection = ({
               onSetHoveredMappingKeys={onSetHoveredMappingKeys}
               onAssignImage={onAssignImage}
               onExcludeImage={onExcludeImage}
+              readOnly={readOnly}
+              showReadOnlyOutline={showReadOnlyOutline}
+              preferImageReadOnlyHighlight={preferImageReadOnlyHighlight}
+              suppressInlineHighlights={suppressInlineHighlights}
             />
           ) : (
             <BlockRenderer
@@ -66,6 +78,10 @@ export const NormalizedDocumentSection = ({
               onSetHoveredMappingKeys={onSetHoveredMappingKeys}
               onAssignImage={onAssignImage}
               onExcludeImage={onExcludeImage}
+              readOnly={readOnly}
+              showReadOnlyOutline={showReadOnlyOutline}
+              preferImageReadOnlyHighlight={preferImageReadOnlyHighlight}
+              suppressInlineHighlights={suppressInlineHighlights}
             />
           )}
         </Box>
