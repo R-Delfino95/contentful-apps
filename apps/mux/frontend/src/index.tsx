@@ -65,15 +65,10 @@ function normalizeForDiff<T>(obj: T): T {
     return Object.keys(obj)
       .filter((k) => (obj as Record<string, unknown>)[k] !== undefined)
       .sort()
-      .reduce(
-        (acc, k) => {
-          (acc as Record<string, unknown>)[k] = normalizeForDiff(
-            (obj as Record<string, unknown>)[k]
-          );
-          return acc;
-        },
-        {} as Record<string, unknown>
-      ) as T;
+      .reduce((acc, k) => {
+        (acc as Record<string, unknown>)[k] = normalizeForDiff((obj as Record<string, unknown>)[k]);
+        return acc;
+      }, {} as Record<string, unknown>) as T;
   }
   return obj;
 }
