@@ -19,8 +19,6 @@ export const handler: FunctionEventHandler<FunctionTypeEnum.AppActionCall> = asy
   const { method, path, body } = event.body;
   const { muxAccessTokenId, muxAccessTokenSecret } = context.appInstallationParameters;
 
-  console.log(`[muxProxy] ${method} ${path}`, body ? `body length: ${body.length}` : 'no body');
-
   if (!muxAccessTokenId || !muxAccessTokenSecret) {
     console.error('[muxProxy] Missing Mux credentials in appInstallationParameters');
     return { ok: false, error: 'Missing Mux API credentials', status: 401 };
@@ -38,8 +36,6 @@ export const handler: FunctionEventHandler<FunctionTypeEnum.AppActionCall> = asy
     console.error(`[muxProxy] Network error on ${method} ${path}:`, err);
     return { ok: false, error: 'Network error calling Mux API', status: 502 };
   }
-
-  console.log(`[muxProxy] ${method} ${path} → ${res.status}`);
 
   if (!res.ok) {
     const errorBody = await res.json().catch(() => ({}));
