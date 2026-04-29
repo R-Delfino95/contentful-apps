@@ -1,14 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import type { PreviewPayload } from '../../src/types';
+import type { CompletedWorkflowPayload } from '../../src/types';
 import type { ContentTypeDisplayInfo } from '../../src/services/contentTypeService';
 import {
-  buildCheckboxEntryList,
-  filterPreviewPayloadBySelectedRowIds,
-} from '../../src/utils/checkboxEntryList';
+  buildEntryList,
+  buildEntryListFromEntryBlockGraph,
+} from '../../src/utils/overviewEntryList';
+import { truncateLabel } from '../../src/utils/utils';
 
-describe('buildCheckboxEntryList', () => {
+describe('buildEntryList', () => {
   it('omits entries without tempId', () => {
-    const payload: PreviewPayload = {
+    const payload: CompletedWorkflowPayload = {
       entries: [
         {
           contentTypeId: 'blogPost',
@@ -22,34 +23,24 @@ describe('buildCheckboxEntryList', () => {
       ],
       assets: [],
       referenceGraph: {},
-      normalizedDocument: {
-        documentId: 'doc-test',
-        contentBlocks: [],
-        tables: [],
-      },
     };
-    const rows = buildCheckboxEntryList(payload);
+    const rows = buildEntryList(payload);
     expect(rows).toHaveLength(1);
     expect(rows[0].id).toBe('only');
     expect(rows[0].entryIndex).toBe(1);
   });
 
   it('returns empty array when there are no entries', () => {
-    const payload: PreviewPayload = {
+    const payload: CompletedWorkflowPayload = {
       entries: [],
       assets: [],
       referenceGraph: {},
-      normalizedDocument: {
-        documentId: 'doc-test',
-        contentBlocks: [],
-        tables: [],
-      },
     };
-    expect(buildCheckboxEntryList(payload)).toEqual([]);
+    expect(buildEntryList(payload)).toEqual([]);
   });
 
   it('nests rows when a parent references a child tempId', () => {
-    const payload: PreviewPayload = {
+    const payload: CompletedWorkflowPayload = {
       entries: [
         {
           tempId: 'page_1',
@@ -70,14 +61,9 @@ describe('buildCheckboxEntryList', () => {
       ],
       assets: [],
       referenceGraph: { creationOrder: ['page_1', 'hero_1'] },
-      normalizedDocument: {
-        documentId: 'doc-test',
-        contentBlocks: [],
-        tables: [],
-      },
     };
 
-    const rows = buildCheckboxEntryList(payload);
+    const rows = buildEntryList(payload);
     expect(rows).toHaveLength(1);
     expect(rows[0].entryIndex).toBe(0);
     expect(rows[0].contentTypeName).toBe('');
@@ -89,7 +75,7 @@ describe('buildCheckboxEntryList', () => {
   });
 
   it('uses empty type prefix when content type names map has no entry for that id', () => {
-    const payload: PreviewPayload = {
+    const payload: CompletedWorkflowPayload = {
       entries: [
         {
           tempId: 'x',
@@ -99,14 +85,9 @@ describe('buildCheckboxEntryList', () => {
       ],
       assets: [],
       referenceGraph: {},
-      normalizedDocument: {
-        documentId: 'doc-test',
-        contentBlocks: [],
-        tables: [],
-      },
     };
 
-    const rows = buildCheckboxEntryList(
+    const rows = buildEntryList(
       payload,
       new Map<string, ContentTypeDisplayInfo>([
         ['other', { name: 'Other', displayField: 'title' }],
@@ -118,7 +99,7 @@ describe('buildCheckboxEntryList', () => {
   });
 
   it('uses CMA content type names when a map is provided', () => {
-    const payload: PreviewPayload = {
+    const payload: CompletedWorkflowPayload = {
       entries: [
         {
           tempId: 'page_1',
@@ -130,46 +111,88 @@ describe('buildCheckboxEntryList', () => {
       ],
       assets: [],
       referenceGraph: {},
-      normalizedDocument: {
-        documentId: 'doc-test',
-        contentBlocks: [],
-        tables: [],
-      },
     };
 
     const contentTypeDisplayInfoById = new Map<string, ContentTypeDisplayInfo>([
       ['page', { name: 'Page (space name)', displayField: 'title' }],
     ]);
-    const rows = buildCheckboxEntryList(payload, contentTypeDisplayInfoById, 'en-US');
+    const rows = buildEntryList(payload, contentTypeDisplayInfoById, 'en-US');
     expect(rows[0].contentTypeName).toBe('Page (space name)');
     expect(rows[0].entryTitle).toBe('Event Detail');
   });
+});
 
-  it('filterPreviewPayloadBySelectedRowIds keeps only selected rows', () => {
-    const payload: PreviewPayload = {
-      entries: [
+describe('buildEntryListFromEntryBlockGraph', () => {
+  const contentTypes = [
+    {
+      sys: { id: 'article' },
+      name: 'Article',
+      displayField: 'title',
+      fields: [],
+    },
+  ];
+
+  const createTextSourceRef = (text: string) => ({
+    type: 'blockText' as const,
+    blockId: 'block-1',
+    start: 0,
+    end: text.length,
+    flattenedRuns: [{ text, start: 0, end: text.length }],
+  });
+
+  it('extracts the entry title from the display field mapping', () => {
+    const rows = buildEntryListFromEntryBlockGraph(
+      [
         {
-          tempId: 'a',
-          contentTypeId: 'blogPost',
-          fields: { title: { 'en-US': 'A' } },
-        },
-        {
-          tempId: 'b',
-          contentTypeId: 'blogPost',
-          fields: { title: { 'en-US': 'B' } },
+          tempId: 'entry-1',
+          contentTypeId: 'article',
+          fieldMappings: [
+            {
+              fieldId: 'title',
+              fieldType: 'Symbol',
+              sourceRefs: [createTextSourceRef('Entry title')],
+              confidence: 0.9,
+            },
+          ],
         },
       ],
-      assets: [],
-      referenceGraph: {},
-      normalizedDocument: {
-        documentId: 'doc-test',
-        contentBlocks: [],
-        tables: [],
-      },
-    };
+      contentTypes
+    );
 
-    const filtered = filterPreviewPayloadBySelectedRowIds(payload, new Set(['b']));
-    expect(filtered.entries).toHaveLength(1);
-    expect(filtered.entries[0].tempId).toBe('b');
+    expect(rows).toHaveLength(1);
+    expect(rows[0].contentTypeName).toBe('Article');
+    expect(rows[0].entryTitle).toBe('Entry title');
+  });
+
+  it('truncates long display-field text using the first text source ref only', () => {
+    const long = 'a'.repeat(100);
+    const rows = buildEntryListFromEntryBlockGraph(
+      [
+        {
+          tempId: 'entry-1',
+          contentTypeId: 'article',
+          fieldMappings: [
+            {
+              fieldId: 'title',
+              fieldType: 'Symbol',
+              sourceRefs: [
+                createTextSourceRef(long),
+                {
+                  type: 'blockText' as const,
+                  blockId: 'block-2',
+                  start: 0,
+                  end: 5,
+                  flattenedRuns: [{ text: 'SKIP', start: 0, end: 5 }],
+                },
+              ],
+              confidence: 0.9,
+            },
+          ],
+        },
+      ],
+      contentTypes
+    );
+
+    expect(rows[0].entryTitle).toBe(truncateLabel(long, 80));
   });
 });

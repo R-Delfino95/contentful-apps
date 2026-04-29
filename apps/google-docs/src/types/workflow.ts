@@ -1,4 +1,6 @@
 import type { AssetToCreate, EntryToCreate } from './entry';
+import type { EntryBlockGraph } from './entryBlockGraph';
+import type { NormalizedDocument } from './normalizedDocument';
 
 export enum RunStatus {
   IN_PROGRESS = 'IN_PROGRESS',
@@ -6,6 +8,27 @@ export enum RunStatus {
   COMPLETED = 'COMPLETED',
   PENDING_REVIEW = 'PENDING_REVIEW',
   DRAFT = 'DRAFT',
+}
+
+export enum WorkflowFailureReason {
+  GENERIC = 'generic',
+  GOOGLE_DRIVE_AUTH_EXPIRED = 'google-drive-auth-expired',
+}
+
+export interface WorkflowFailure {
+  code: WorkflowFailureReason;
+  message: string;
+  httpStatus?: number;
+}
+
+export class WorkflowRunError extends Error {
+  reason: WorkflowFailureReason;
+
+  constructor(message: string, reason: WorkflowFailureReason = WorkflowFailureReason.GENERIC) {
+    super(message);
+    this.name = 'WorkflowRunError';
+    this.reason = reason;
+  }
 }
 
 export interface AgentRunMessage {
@@ -29,81 +52,6 @@ export interface DocumentTabProps {
   tabTitle: string;
 }
 
-export interface NormalizedDocumentTextRun {
-  text: string;
-  styles?: {
-    bold?: boolean;
-    italic?: boolean;
-    underline?: boolean;
-  };
-}
-
-export interface NormalizedDocumentContentBlock {
-  id: string;
-  position: number;
-  type: 'paragraph' | 'heading' | 'listItem';
-  headingLevel?: number;
-  textRuns: NormalizedDocumentTextRun[];
-  designValueIds: string[];
-  imageIds: string[];
-  bullet?: {
-    nestingLevel: number;
-    ordered: boolean;
-  };
-  captionForImageId?: string;
-}
-
-export interface NormalizedDocumentTableRow {
-  cells: string[];
-}
-
-export interface NormalizedDocumentTable {
-  id: string;
-  position: number;
-  headers: string[];
-  rows: NormalizedDocumentTableRow[];
-  designValueIds: string[];
-  imageIds: string[];
-}
-
-export interface NormalizedDocumentDesignValue {
-  id: string;
-  type: string;
-  value: Record<string, unknown>;
-  appliesTo: string[];
-}
-
-export interface NormalizedDocumentImage {
-  id: string;
-  url: string;
-  altText?: string;
-  title?: string;
-  fileName?: string;
-  contentType?: string;
-  width?: number;
-  height?: number;
-  blockId?: string;
-  tableId?: string;
-}
-
-export interface NormalizedDocumentAsset {
-  url: string;
-  altText?: string;
-  title?: string;
-  fileName?: string;
-  contentType?: string;
-}
-
-export interface NormalizedDocument {
-  documentId: string;
-  title?: string;
-  designValues?: NormalizedDocumentDesignValue[];
-  contentBlocks: NormalizedDocumentContentBlock[];
-  images?: NormalizedDocumentImage[];
-  tables: NormalizedDocumentTable[];
-  assets?: NormalizedDocumentAsset[];
-}
-
 export interface ReviewedReferenceGraphEdge {
   from: string;
   to: string;
@@ -111,9 +59,10 @@ export interface ReviewedReferenceGraphEdge {
 }
 
 export interface ReviewedReferenceGraphDeferredField {
-  entryId: string;
+  entryId?: string;
+  tempId?: string;
   fieldId: string;
-  reason: string;
+  reason?: string;
 }
 
 export interface ReviewedReferenceGraph {
@@ -123,19 +72,37 @@ export interface ReviewedReferenceGraph {
   hasCircularDependency?: boolean;
 }
 
-export interface PreviewPayload {
+export interface WorkflowContentTypeField {
+  id?: string;
+  name?: string;
+  type?: string;
+  linkType?: string;
+  fieldControl?: {
+    widgetId?: string;
+  };
+  items?: {
+    type?: string;
+    linkType?: string;
+    validations?: unknown[];
+  };
+  required?: boolean;
+  validations?: unknown[];
+}
+
+export interface WorkflowContentType {
+  sys: {
+    id: string;
+  };
+  displayField?: string;
+  name?: string;
+  description?: string | null;
+  fields: WorkflowContentTypeField[];
+}
+
+export interface CompletedWorkflowPayload {
   entries: EntryToCreate[];
   assets: AssetToCreate[];
   referenceGraph: ReviewedReferenceGraph;
-  normalizedDocument: NormalizedDocument;
-}
-
-export interface MappingReviewEntryBlock {
-  [key: string]: unknown;
-}
-
-export interface MappingReviewContentType {
-  [key: string]: unknown;
 }
 
 export interface TabsImagesSuspendPayload {
@@ -158,9 +125,9 @@ export interface MappingReviewSuspendPayload {
   documentId: string;
   documentTitle?: string;
   normalizedDocument: NormalizedDocument;
-  entryBlockGraph: MappingReviewEntryBlock[];
+  entryBlockGraph: EntryBlockGraph;
   referenceGraph: ReviewedReferenceGraph;
-  contentTypes: MappingReviewContentType[];
+  contentTypes: WorkflowContentType[];
 }
 
 export type WorkflowRunResult =
@@ -174,12 +141,13 @@ export type WorkflowRunResult =
       status: RunStatus.COMPLETED;
       runId: string;
       messages: AgentRunMessage[];
-      googleDocPayload: PreviewPayload;
+      googleDocPayload: CompletedWorkflowPayload;
     };
 
 export interface ResumePayload {
   includeImages?: boolean;
   selectedTabIds?: string[];
   editedNormalizedDocument?: NormalizedDocument;
-  entryBlockGraph?: MappingReviewEntryBlock[];
+  entryBlockGraph?: EntryBlockGraph;
+  cancelled?: true;
 }

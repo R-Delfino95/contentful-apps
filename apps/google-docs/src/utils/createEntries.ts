@@ -1,8 +1,7 @@
 import type {
   AssetToCreate,
   EntryToCreate,
-  NormalizedDocument,
-  PreviewPayload,
+  CompletedWorkflowPayload,
   ReviewedReferenceGraph,
   ReviewedReferenceGraphDeferredField,
   ReviewedReferenceGraphEdge,
@@ -10,32 +9,6 @@ import type {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-const EMPTY_NORMALIZED_DOCUMENT: NormalizedDocument = {
-  documentId: '',
-  contentBlocks: [],
-  tables: [],
-};
-
-/** Shallow parse: coerce top-level fields, default arrays; does not validate nested block/table shape. */
-function parseNormalizedDocument(raw: unknown): NormalizedDocument {
-  if (!isRecord(raw)) {
-    return { ...EMPTY_NORMALIZED_DOCUMENT };
-  }
-  return {
-    documentId: typeof raw.documentId === 'string' ? raw.documentId : '',
-    title: typeof raw.title === 'string' ? raw.title : undefined,
-    designValues: Array.isArray(raw.designValues)
-      ? (raw.designValues as NormalizedDocument['designValues'])
-      : undefined,
-    contentBlocks: Array.isArray(raw.contentBlocks)
-      ? (raw.contentBlocks as NormalizedDocument['contentBlocks'])
-      : [],
-    images: Array.isArray(raw.images) ? (raw.images as NormalizedDocument['images']) : undefined,
-    tables: Array.isArray(raw.tables) ? (raw.tables as NormalizedDocument['tables']) : [],
-    assets: Array.isArray(raw.assets) ? (raw.assets as NormalizedDocument['assets']) : undefined,
-  };
 }
 
 function parseReferenceGraph(raw: unknown): ReviewedReferenceGraph | undefined {
@@ -133,7 +106,7 @@ function isAssetToCreateShape(value: unknown): value is AssetToCreate {
   return isRecord(value) && typeof value.url === 'string' && value.url.trim() !== '';
 }
 
-export function validatePayloadShape(payload: unknown): PreviewPayload {
+export function validatePayloadShape(payload: unknown): CompletedWorkflowPayload {
   if (!isRecord(payload)) {
     throw new Error('Reviewed payload must be a JSON object.');
   }
@@ -165,12 +138,9 @@ export function validatePayloadShape(payload: unknown): PreviewPayload {
 
   const referenceGraph = parseReferenceGraph(payload.referenceGraph);
 
-  const normalizedDocument = parseNormalizedDocument(payload.normalizedDocument);
-
   return {
     entries: payload.entries as EntryToCreate[],
     assets,
     referenceGraph: referenceGraph ?? {},
-    normalizedDocument,
   };
 }

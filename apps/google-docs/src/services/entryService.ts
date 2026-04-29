@@ -1,15 +1,14 @@
 import { PageAppSDK, ConfigAppSDK } from '@contentful/app-sdk';
 import { EntryProps, ContentTypeProps } from 'contentful-management';
 import { normalizeAgentRichTextJson } from './richtext';
-import { EntryToCreate, AssetToCreate, PreviewPayload } from '@types';
+import { EntryToCreate, AssetToCreate, CompletedWorkflowPayload } from '@types';
 import {
   entryHasReferences,
   separateReferenceFields,
   resolveReferences,
 } from './referenceResolution';
-import { orderEntriesByCreationOrder } from '../utils/previewPayload';
+import { orderEntriesByCreationOrder } from '../utils/createEntries';
 import { mapFieldValuesToSpaceDefaultLocale } from '../utils/remapEntryLocales';
-import { filterPreviewPayloadBySelectedRowIds } from '../utils/checkboxEntryList';
 
 export interface EntryCreationResult {
   createdEntries: EntryProps[];
@@ -224,18 +223,12 @@ async function createAssetsFromAgentOutput(
 
 export async function createEntriesFromPreviewPayload(
   sdk: PageAppSDK | ConfigAppSDK,
-  payload: PreviewPayload,
-  selectedEntryTempIds?: Set<string>,
+  payload: CompletedWorkflowPayload,
   oauthToken?: string
 ): Promise<EntryCreationResult> {
-  const effectivePayload =
-    selectedEntryTempIds !== undefined
-      ? filterPreviewPayloadBySelectedRowIds(payload, selectedEntryTempIds)
-      : payload;
-
   const orderedEntries = orderEntriesByCreationOrder(
-    effectivePayload.entries,
-    effectivePayload.referenceGraph?.creationOrder
+    payload.entries,
+    payload.referenceGraph?.creationOrder
   );
   const entriesForSpaceLocale = mapFieldValuesToSpaceDefaultLocale(
     orderedEntries,
@@ -247,7 +240,7 @@ export async function createEntriesFromPreviewPayload(
     sdk,
     entriesForSpaceLocale,
     contentTypeIds,
-    effectivePayload.assets,
+    payload.assets,
     oauthToken
   );
 }

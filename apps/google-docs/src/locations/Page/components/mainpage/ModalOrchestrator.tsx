@@ -1,9 +1,9 @@
-import { forwardRef, useImperativeHandle, useState } from 'react';
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useState } from 'react';
 import { PageAppSDK } from '@contentful/app-sdk';
 import { Modal } from '@contentful/f36-components';
 import { ContentTypeProps } from 'contentful-management';
 import { ConfirmCancelModal } from '../modals/ConfirmCancelModal';
-import { ErrorModal } from '../modals/ErrorModal';
+import { ErrorModal, type ErrorModalConfig } from '../modals/ErrorModal';
 import SelectDocumentModal from '../modals/step_1/SelectDocumentModal';
 import { LoadingModal } from '../modals/LoadingModal';
 import { ERROR_MESSAGES } from '@constants/messages';
@@ -12,11 +12,13 @@ import { SelectTabsModal } from '../modals/step_3/SelectTabsModal';
 import {
   DocumentTabProps,
   MappingReviewSuspendPayload,
+  CompletedWorkflowPayload,
   ResumePayload,
   TabsImagesSuspendPayload,
-  PreviewPayload,
   RunStatus,
   WorkflowRunResult,
+  WorkflowFailureReason,
+  WorkflowRunError,
 } from '@types';
 import { ContentTypePickerModal } from '../modals/step_2/ContentTypePickerModal';
 import { IncludeImagesModal } from '../modals/step_4/IncludeImagesModal';
@@ -24,9 +26,7 @@ import { useWorkflowAgent } from '@hooks/useWorkflowAgent';
 
 export interface ModalOrchestratorHandle {
   startFlow: () => void;
-  /** Clears in-progress flow state without calling `onResetToMain` (parent clears preview separately). */
-  resetFlowState: () => void;
-  resumeMappingReview: (payload: MappingReviewSuspendPayload) => Promise<void>;
+  resetFlow: () => void;
 }
 
 enum FlowStep {
@@ -39,16 +39,36 @@ enum FlowStep {
 interface ModalOrchestratorProps {
   sdk: PageAppSDK;
   oauthToken: string;
-  onPreviewReady: (payload: PreviewPayload) => void;
+  isOAuthConnected?: boolean;
+  isOAuthBusy?: boolean;
+  onReconnectGoogleDrive?: () => Promise<void>;
+  onMappingReviewReady: (payload: MappingReviewSuspendPayload, runId: string) => void;
   onResetToMain: () => void;
-  onMappingReviewReady: (payload: MappingReviewSuspendPayload) => void;
+}
+
+interface PreviewErrorState {
+  reason: WorkflowFailureReason;
+  title: string;
+  message: string;
 }
 
 export const ModalOrchestrator = forwardRef<ModalOrchestratorHandle, ModalOrchestratorProps>(
-  ({ sdk, oauthToken, onPreviewReady, onMappingReviewReady, onResetToMain }, ref) => {
+  (
+    {
+      sdk,
+      oauthToken,
+      isOAuthConnected = false,
+      isOAuthBusy = false,
+      onReconnectGoogleDrive = async () => undefined,
+      onMappingReviewReady,
+      onResetToMain,
+    },
+    ref
+  ) => {
     const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
     const [isConfirmCancelModalOpen, setIsConfirmCancelModalOpen] = useState(false);
-    const [isErrorPreviewModalOpen, setIsErrorPreviewModalOpen] = useState(false);
+    const [previewErrorState, setPreviewErrorState] = useState<PreviewErrorState | null>(null);
+    const [isReconnectPending, setIsReconnectPending] = useState(false);
     const [flowStep, setFlowStep] = useState<FlowStep | null>(null);
     const [documentId, setDocumentId] = useState<string>('');
     const [selectedContentTypes, setSelectedContentTypes] = useState<ContentTypeProps[]>([]);
@@ -68,23 +88,11 @@ export const ModalOrchestrator = forwardRef<ModalOrchestratorHandle, ModalOrches
 
     useImperativeHandle(ref, () => ({
       startFlow: () => setIsUploadModalOpen(true),
-      resetFlowState: () => {
-        resetProgress();
+      resetFlow: () => {
         setIsConfirmCancelModalOpen(false);
-        setIsErrorPreviewModalOpen(false);
-      },
-      resumeMappingReview: async (payload: MappingReviewSuspendPayload) => {
-        if (!activeRunId) {
-          throw new Error('Workflow run id is missing for resume.');
-        }
-
-        // TODO : modify the normalized document and entry block graph with the edited values
-        const workflowRun = await resumeWorkflow(activeRunId, {
-          editedNormalizedDocument: payload.normalizedDocument,
-          entryBlockGraph: payload.entryBlockGraph,
-        });
-
-        handleWorkflowResult(workflowRun);
+        setPreviewErrorState(null);
+        setIsReconnectPending(false);
+        resetProgress();
       },
     }));
 
@@ -110,16 +118,62 @@ export const ModalOrchestrator = forwardRef<ModalOrchestratorHandle, ModalOrches
       setIsConfirmCancelModalOpen(true);
     };
 
-    const closeModalAndReset = (setOpen: (open: boolean) => void) => () => {
-      setOpen(false);
+    const handleFlowModalCloseRequest = () => {
+      if (flowStep === FlowStep.LOADING) return;
+      showDiscardConfirmation();
+    };
+
+    const closePreviewErrorAndReset = useCallback(() => {
+      setPreviewErrorState(null);
+      setIsReconnectPending(false);
+      resetProgress();
+      onResetToMain();
+    }, [onResetToMain]);
+
+    const handleConfirmCancel = async () => {
+      setIsConfirmCancelModalOpen(false);
+
+      if (activeRunId) {
+        try {
+          await resumeWorkflow(activeRunId, { cancelled: true });
+        } catch (error) {
+          console.error(error);
+        }
+      }
+
       resetProgress();
       onResetToMain();
     };
 
-    const showWorkflowError = () => {
+    const showWorkflowError = (error?: unknown) => {
       setFlowStep(null);
-      setIsErrorPreviewModalOpen(true);
+
+      if (
+        error instanceof WorkflowRunError &&
+        error.reason === WorkflowFailureReason.GOOGLE_DRIVE_AUTH_EXPIRED
+      ) {
+        setPreviewErrorState({
+          reason: WorkflowFailureReason.GOOGLE_DRIVE_AUTH_EXPIRED,
+          title: 'Reconnect Google Drive to continue',
+          message: ERROR_MESSAGES.GOOGLE_DRIVE_AUTH_ERROR,
+        });
+        return;
+      }
+
+      setPreviewErrorState({
+        reason: WorkflowFailureReason.GENERIC,
+        title: 'Unable to generate preview',
+        message: ERROR_MESSAGES.GENERIC_ERROR,
+      });
     };
+
+    useEffect(() => {
+      if (!isReconnectPending || isOAuthBusy || !isOAuthConnected) {
+        return;
+      }
+
+      closePreviewErrorAndReset();
+    }, [closePreviewErrorAndReset, isOAuthBusy, isOAuthConnected, isReconnectPending]);
 
     const handleUploadModalCloseRequest = (docId?: string) => {
       if (docId) {
@@ -164,7 +218,7 @@ export const ModalOrchestrator = forwardRef<ModalOrchestratorHandle, ModalOrches
       if (workflowRun.status === RunStatus.PENDING_REVIEW) {
         if (workflowRun.suspendPayload.suspendStepId === 'mapping-review') {
           setFlowStep(null);
-          onMappingReviewReady(workflowRun.suspendPayload);
+          onMappingReviewReady(workflowRun.suspendPayload, workflowRun.runId);
           return;
         }
 
@@ -172,7 +226,6 @@ export const ModalOrchestrator = forwardRef<ModalOrchestratorHandle, ModalOrches
         return;
       }
 
-      onPreviewReady(workflowRun.googleDocPayload);
       setFlowStep(null);
     };
 
@@ -214,8 +267,8 @@ export const ModalOrchestrator = forwardRef<ModalOrchestratorHandle, ModalOrches
     const handleContentTypeContinue = async (contentTypeIds: string[]) => {
       try {
         handleWorkflowResult(await startWorkflowWithDelayedLoading(contentTypeIds));
-      } catch {
-        showWorkflowError();
+      } catch (error) {
+        showWorkflowError(error);
       }
     };
 
@@ -229,8 +282,8 @@ export const ModalOrchestrator = forwardRef<ModalOrchestratorHandle, ModalOrches
 
       try {
         await continueWorkflow({ selectedTabIds: selectedTabs.map((tab) => tab.tabId) });
-      } catch {
-        showWorkflowError();
+      } catch (error) {
+        showWorkflowError(error);
       }
     };
 
@@ -239,10 +292,49 @@ export const ModalOrchestrator = forwardRef<ModalOrchestratorHandle, ModalOrches
 
       try {
         await continueWorkflow({ includeImages });
-      } catch {
-        showWorkflowError();
+      } catch (error) {
+        showWorkflowError(error);
       }
     };
+
+    const handleReconnectGoogleDrive = useCallback(async () => {
+      setIsReconnectPending(true);
+
+      try {
+        await onReconnectGoogleDrive();
+      } catch (error) {
+        console.error(error);
+        setIsReconnectPending(false);
+      }
+    }, [onReconnectGoogleDrive]);
+
+    const errorModalConfig = useMemo<ErrorModalConfig>(() => {
+      if (previewErrorState?.reason === WorkflowFailureReason.GOOGLE_DRIVE_AUTH_EXPIRED) {
+        return {
+          title: previewErrorState.title,
+          message: previewErrorState.message,
+          primaryActionLabel: 'Reconnect Google Drive',
+          onPrimaryAction: () => void handleReconnectGoogleDrive(),
+          secondaryActionLabel: 'Close',
+          onSecondaryAction: closePreviewErrorAndReset,
+          isPrimaryActionLoading: isReconnectPending && isOAuthBusy,
+        };
+      }
+
+      return {
+        title: previewErrorState?.title ?? 'Unable to generate preview',
+        message: previewErrorState?.message ?? ERROR_MESSAGES.GENERIC_ERROR,
+        primaryActionLabel: 'Close',
+        onPrimaryAction: closePreviewErrorAndReset,
+        isPrimaryActionLoading: false,
+      };
+    }, [
+      closePreviewErrorAndReset,
+      handleReconnectGoogleDrive,
+      isOAuthBusy,
+      isReconnectPending,
+      previewErrorState,
+    ]);
 
     const renderFlowStep = () => {
       switch (flowStep) {
@@ -282,7 +374,6 @@ export const ModalOrchestrator = forwardRef<ModalOrchestratorHandle, ModalOrches
             <LoadingModal
               step="reviewingContentTypes"
               title="Preparing your preview"
-              onClose={showDiscardConfirmation}
               contentTypeCount={selectedContentTypes.length}
             />
           );
@@ -301,7 +392,7 @@ export const ModalOrchestrator = forwardRef<ModalOrchestratorHandle, ModalOrches
 
         <Modal
           isShown={flowStep !== null}
-          onClose={showDiscardConfirmation}
+          onClose={handleFlowModalCloseRequest}
           size={'large'}
           shouldCloseOnOverlayClick={false}
           shouldCloseOnEscapePress={flowStep !== FlowStep.LOADING}>
@@ -310,16 +401,14 @@ export const ModalOrchestrator = forwardRef<ModalOrchestratorHandle, ModalOrches
 
         <ConfirmCancelModal
           isOpen={isConfirmCancelModalOpen}
-          onConfirm={closeModalAndReset(setIsConfirmCancelModalOpen)}
+          onConfirm={handleConfirmCancel}
           onCancel={() => setIsConfirmCancelModalOpen(false)}
         />
 
         <ErrorModal
-          isOpen={isErrorPreviewModalOpen}
-          onClose={closeModalAndReset(setIsErrorPreviewModalOpen)}
-          title="Unable to generate preview"
-          message={ERROR_MESSAGES.GENERIC_ERROR}
-          onTryAgain={() => setIsErrorPreviewModalOpen(false)}
+          isOpen={previewErrorState !== null}
+          onClose={closePreviewErrorAndReset}
+          config={errorModalConfig}
         />
       </>
     );

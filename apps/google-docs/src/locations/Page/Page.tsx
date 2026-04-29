@@ -1,91 +1,119 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { PageAppSDK } from '@contentful/app-sdk';
 import { useSDK } from '@contentful/react-apps-toolkit';
-import { Layout } from '@contentful/f36-components';
+import { Button, Layout } from '@contentful/f36-components';
 import {
   ModalOrchestrator,
   ModalOrchestratorHandle,
 } from './components/mainpage/ModalOrchestrator';
 import { MainPageView } from './components/mainpage/MainPageView';
-import { PreviewPageView } from './components/mainpage/PreviewPageView';
-import { MappingReviewSuspendPayload, PreviewPayload } from '@types';
-import { isMappingReviewSuspendPayload } from '../../utils/utils';
+import { ReviewPage } from './components/review/ReviewPage';
+import { loadFixtureReviewPayload } from '../../fixtures/googleDocsReview/loadFixtureReviewPayload';
+import type { MappingReviewSuspendPayload } from '@types';
+import { useWorkflowAgent } from '@hooks/useWorkflowAgent';
+import { useGoogleDriveOAuth } from '@hooks/useGoogleDriveOAuth';
+
+const enableMockReviewPayload = import.meta.env.VITE_ENABLE_MOCK_REVIEW_PAYLOAD === 'true';
 
 const Page = () => {
   const sdk = useSDK<PageAppSDK>();
   const modalOrchestratorRef = useRef<ModalOrchestratorHandle>(null);
-  const [oauthToken, setOauthToken] = useState<string>('');
-  const [isOAuthConnected, setIsOAuthConnected] = useState(false);
-  const [isOAuthLoading, setIsOAuthLoading] = useState(true);
-  const [previewPayload, setPreviewPayload] = useState<
-    PreviewPayload | MappingReviewSuspendPayload | null
-  >(null);
+  const [mappingReviewState, setMappingReviewState] = useState<{
+    payload: MappingReviewSuspendPayload;
+    runId?: string;
+  } | null>(null);
+  const [fixtureReviewPayload, setFixtureReviewPayload] =
+    useState<MappingReviewSuspendPayload | null>(null);
+  const { oauthToken, isOAuthConnected, isOAuthLoading, isOAuthBusy, startOAuth, disconnectOAuth } =
+    useGoogleDriveOAuth(sdk);
+  const { resumeWorkflow } = useWorkflowAgent({
+    sdk,
+    documentId: '',
+    oauthToken: '',
+  });
 
-  const handleOauthTokenChange = (token: string) => {
-    setOauthToken(token);
-  };
+  // TODO: remove fixture review payload loading before launch
+  useEffect(() => {
+    let isCancelled = false;
 
-  const handleOAuthConnectedChange = (isConnected: boolean) => {
-    setIsOAuthConnected(isConnected);
-  };
+    void loadFixtureReviewPayload()
+      .then((payload) => {
+        if (!isCancelled) {
+          setFixtureReviewPayload(payload);
+        }
+      })
+      .catch(() => {
+        if (!isCancelled) {
+          setFixtureReviewPayload(null);
+        }
+      });
 
-  const handleOAuthLoadingStateChange = (isLoading: boolean) => {
-    setIsOAuthLoading(isLoading);
-  };
+    return () => {
+      isCancelled = true;
+    };
+  }, []);
 
   const handleSelectFile = () => {
     modalOrchestratorRef.current?.startFlow();
   };
 
-  const handlePreviewReady = (payload: PreviewPayload) => {
-    setPreviewPayload(payload);
-  };
-
-  const handleMappingReviewReady = (payload: MappingReviewSuspendPayload) => {
-    setPreviewPayload(payload);
+  const handleMappingReviewReady = (payload: MappingReviewSuspendPayload, runId: string) => {
+    setMappingReviewState({ payload, runId });
   };
 
   const handleReturnToMainPage = () => {
-    modalOrchestratorRef.current?.resetFlowState();
-    setPreviewPayload(null);
+    setMappingReviewState(null);
   };
 
-  const handleResumeMappingReview = async () => {
-    if (!previewPayload || !isMappingReviewSuspendPayload(previewPayload)) {
+  const resetFlowAndReturnToMainPage = () => {
+    modalOrchestratorRef.current?.resetFlow();
+    handleReturnToMainPage();
+  };
+
+  const handleCancelMappingReview = async () => {
+    if (!mappingReviewState?.runId) {
+      resetFlowAndReturnToMainPage();
       return;
     }
 
     try {
-      await modalOrchestratorRef.current?.resumeMappingReview(previewPayload);
+      await resumeWorkflow(mappingReviewState.runId, { cancelled: true });
     } catch (error) {
-      console.error('Failed to resume mapping review:', error);
-      sdk.notifier.error('Unable to resume preview. Please try again.');
+      console.error(error);
+    } finally {
+      resetFlowAndReturnToMainPage();
     }
   };
-
-  console.log('previewPayload', previewPayload);
 
   return (
     <>
       <Layout withBoxShadow={true} offsetTop={10}>
-        {previewPayload ? (
-          <PreviewPageView
-            payload={previewPayload}
-            oauthToken={oauthToken}
-            onLeavePreview={handleReturnToMainPage}
-            onResumeMappingReview={handleResumeMappingReview}
+        {mappingReviewState ? (
+          <ReviewPage
+            sdk={sdk}
+            payload={mappingReviewState.payload}
+            runId={mappingReviewState.runId}
+            onCancelReview={handleCancelMappingReview}
+            onExitReview={resetFlowAndReturnToMainPage}
           />
         ) : (
-          <MainPageView
-            oauthToken={oauthToken}
-            isOAuthConnected={isOAuthConnected}
-            isOAuthLoading={isOAuthLoading}
-            onOAuthConnectedChange={handleOAuthConnectedChange}
-            onOauthTokenChange={handleOauthTokenChange}
-            onLoadingStateChange={handleOAuthLoadingStateChange}
-            onSelectFile={handleSelectFile}
-            sdk={sdk}
-          />
+          <>
+            {/* TODO: remove mock review payload button before launch */}
+            {enableMockReviewPayload && fixtureReviewPayload ? (
+              <Button onClick={() => setMappingReviewState({ payload: fixtureReviewPayload })}>
+                Mock from fixture
+              </Button>
+            ) : null}
+            <MainPageView
+              oauthToken={oauthToken}
+              isOAuthConnected={isOAuthConnected}
+              isOAuthLoading={isOAuthLoading}
+              isOAuthBusy={isOAuthBusy}
+              onConnectGoogleDrive={startOAuth}
+              onDisconnectGoogleDrive={disconnectOAuth}
+              onSelectFile={handleSelectFile}
+            />
+          </>
         )}
       </Layout>
 
@@ -93,7 +121,9 @@ const Page = () => {
         ref={modalOrchestratorRef}
         sdk={sdk}
         oauthToken={oauthToken}
-        onPreviewReady={handlePreviewReady}
+        isOAuthConnected={isOAuthConnected}
+        isOAuthBusy={isOAuthBusy}
+        onReconnectGoogleDrive={startOAuth}
         onMappingReviewReady={handleMappingReviewReady}
         onResetToMain={handleReturnToMainPage}
       />

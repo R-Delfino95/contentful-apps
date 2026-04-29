@@ -1,11 +1,16 @@
 import { PageAppSDK } from '@contentful/app-sdk';
-import { LOCAL_AGENTS_API_BASE_URL, WORKFLOW_AGENT_ID } from '../utils/constants/agent';
+import {
+  LOCAL_AGENTS_API_BASE_URL,
+  WORKFLOW_AGENT_ID,
+  USE_LOCAL_AGENTS_API,
+} from '../utils/constants/agent';
 import {
   AgentRunMessage,
   MappingReviewSuspendPayload,
   ResumePayload,
   RunStatus,
   TabsImagesSuspendPayload,
+  WorkflowFailure,
 } from '@types';
 
 const AGENTS_API_HEADERS = {
@@ -39,6 +44,7 @@ export interface AgentRunData {
     workflowId?: string;
     workflowRunId?: string;
     suspendPayload?: TabsImagesSuspendPayload | MappingReviewSuspendPayload;
+    workflowFailure?: WorkflowFailure;
     googleDocPayload?: Record<string, unknown>;
   };
   payload?: string;
@@ -59,7 +65,7 @@ export async function getWorkflowRun(
   environmentId: string,
   runId: string
 ): Promise<AgentRunData | null> {
-  if (LOCAL_AGENTS_API_BASE_URL) {
+  if (USE_LOCAL_AGENTS_API) {
     const response = await fetch(
       `${LOCAL_AGENTS_API_BASE_URL}/spaces/${spaceId}/environments/${environmentId}/ai_agents/runs/${runId}`,
       {
@@ -102,7 +108,7 @@ export async function startAgentRun(
 ): Promise<string> {
   let runData: AgentRunData;
 
-  if (LOCAL_AGENTS_API_BASE_URL) {
+  if (USE_LOCAL_AGENTS_API) {
     const response = await fetch(
       `${LOCAL_AGENTS_API_BASE_URL}/spaces/${spaceId}/environments/${environmentId}/ai_agents/agents/${WORKFLOW_AGENT_ID}/generate`,
       {
@@ -137,6 +143,12 @@ export async function startAgentRun(
   return runData.sys.id;
 }
 
+/**
+ * Resumes a suspended agent run. For the Google Docs mapping-review step, the
+ * edited `entryBlockGraph` must live in `resumePayload` (see Network tab). After resume,
+ * mapping-review repopulates `metadata.suspendPayload` with the reviewed graph (the resume
+ * handler clears it first).
+ */
 export async function resumeWorkflowRun(
   sdk: PageAppSDK,
   spaceId: string,
@@ -144,7 +156,7 @@ export async function resumeWorkflowRun(
   runId: string,
   resumePayload: ResumePayload
 ): Promise<void> {
-  if (LOCAL_AGENTS_API_BASE_URL) {
+  if (USE_LOCAL_AGENTS_API) {
     const response = await fetch(
       `${LOCAL_AGENTS_API_BASE_URL}/spaces/${spaceId}/environments/${environmentId}/ai_agents/runs/${runId}/resume`,
       {
@@ -161,16 +173,8 @@ export async function resumeWorkflowRun(
     return;
   }
 
-  const agentRunApi = sdk.cma.agentRun as {
-    resume?: (
-      params: { spaceId: string; environmentId: string; runId: string },
-      body: { resumePayload: ResumePayload }
-    ) => Promise<unknown>;
-  };
-
-  if (!agentRunApi.resume) {
-    throw new Error('Agent run resume is not available in the current SDK.');
-  }
-
-  await agentRunApi.resume({ spaceId, environmentId, runId }, { resumePayload });
+  await sdk.cma.agentRun.resumeRun(
+    { spaceId, environmentId, runId },
+    { resumePayload: resumePayload as Record<string, unknown> }
+  );
 }
