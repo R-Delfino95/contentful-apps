@@ -66,10 +66,7 @@ export class MuxApiService {
   private sdk: FieldExtensionSDK | AppExtensionSDK;
   private actionIds: Record<string, string> = {};
 
-  private constructor(
-    cmaClient: PlainClientAPI,
-    sdk: FieldExtensionSDK | AppExtensionSDK
-  ) {
+  private constructor(cmaClient: PlainClientAPI, sdk: FieldExtensionSDK | AppExtensionSDK) {
     this.cmaClient = cmaClient;
     this.sdk = sdk;
   }
@@ -95,10 +92,7 @@ export class MuxApiService {
     }
   }
 
-  private async callAction<T>(
-    actionName: string,
-    parameters: Record<string, any>
-  ): Promise<T> {
+  private async callAction<T>(actionName: string, parameters: Record<string, any>): Promise<T> {
     const actionId = this.actionIds[actionName];
     if (!actionId) {
       throw new MuxApiError(`App Action '${actionName}' not found.`);
@@ -158,11 +152,18 @@ export class MuxApiService {
   // --- Static rendition operations ---
 
   async deleteStaticRendition(assetId: string, staticRenditionId: string): Promise<void> {
-    await this.callProxy('DELETE', `/video/v1/assets/${assetId}/static-renditions/${staticRenditionId}`);
+    await this.callProxy(
+      'DELETE',
+      `/video/v1/assets/${assetId}/static-renditions/${staticRenditionId}`
+    );
   }
 
   async createStaticRendition(assetId: string, resolution: ResolutionType): Promise<void> {
-    await this.callProxy('POST', `/video/v1/assets/${assetId}/static-renditions`, JSON.stringify({ resolution }));
+    await this.callProxy(
+      'POST',
+      `/video/v1/assets/${assetId}/static-renditions`,
+      JSON.stringify({ resolution })
+    );
   }
 
   // --- Track operations ---
@@ -214,10 +215,7 @@ export class MuxApiService {
 
 // --- Helper functions (pure data transformation, stays in frontend) ---
 
-export function buildAssetSettings(
-  options: ModalData,
-  drmConfigurationId?: string
-): AssetSettings {
+export function buildAssetSettings(options: ModalData, drmConfigurationId?: string): AssetSettings {
   const selectedPolicy = options.playbackPolicies[0];
   const hasDRM = selectedPolicy === 'drm';
   const settings: AssetSettings = {

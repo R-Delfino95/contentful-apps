@@ -29,9 +29,7 @@ async function deleteMuxResource({
   const deleteRes = await muxFetch(getCredentials(context), 'DELETE', path);
   if (!deleteRes.ok) {
     const error = await deleteRes.json();
-    throw new Error(
-      `Error deleting ${logLabel}: ${error.error?.messages?.[0] || 'Unknown error'}`
-    );
+    throw new Error(`Error deleting ${logLabel}: ${error.error?.messages?.[0] || 'Unknown error'}`);
   }
 }
 
@@ -407,9 +405,7 @@ async function createMuxPlaybackId(assetId: string, policy: string, context: any
   );
   if (!createRes.ok) {
     const error = await createRes.json();
-    throw new Error(
-      `Error creating playbackId: ${error.error?.messages?.[0] || 'Unknown error'}`
-    );
+    throw new Error(`Error creating playbackId: ${error.error?.messages?.[0] || 'Unknown error'}`);
   }
 }
 
@@ -430,9 +426,7 @@ async function updateMuxAsset(assetId: string, data: any, context: any) {
   );
   if (!updateRes.ok) {
     const error = await updateRes.json();
-    throw new Error(
-      `Error updating Mux asset: ${error.error?.messages?.[0] || 'Unknown error'}`
-    );
+    throw new Error(`Error updating Mux asset: ${error.error?.messages?.[0] || 'Unknown error'}`);
   }
 }
 

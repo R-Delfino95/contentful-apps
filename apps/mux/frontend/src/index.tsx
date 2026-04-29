@@ -65,10 +65,15 @@ function normalizeForDiff<T>(obj: T): T {
     return Object.keys(obj)
       .filter((k) => (obj as Record<string, unknown>)[k] !== undefined)
       .sort()
-      .reduce((acc, k) => {
-        (acc as Record<string, unknown>)[k] = normalizeForDiff((obj as Record<string, unknown>)[k]);
-        return acc;
-      }, {} as Record<string, unknown>) as T;
+      .reduce(
+        (acc, k) => {
+          (acc as Record<string, unknown>)[k] = normalizeForDiff(
+            (obj as Record<string, unknown>)[k]
+          );
+          return acc;
+        },
+        {} as Record<string, unknown>
+      ) as T;
   }
   return obj;
 }
@@ -412,11 +417,7 @@ export class App extends React.Component<AppProps, AppState> {
       });
       this.setState({ pendingUploadURL: null });
     } else {
-      const muxUploadUrl = await getUploadUrl(
-        this.muxApi,
-        this.props.sdk,
-        options
-      );
+      const muxUploadUrl = await getUploadUrl(this.muxApi, this.props.sdk, options);
 
       if (!muxUploadUrl) {
         // Adding this fallback so the upload won't fail when the DRM Configuration ID is invalid
@@ -1333,9 +1334,7 @@ export class App extends React.Component<AppProps, AppState> {
             )}
 
             {showPlayer && (
-              <section
-                className="player"
-                style={this.getPlayerAspectRatio()}>
+              <section className="player" style={this.getPlayerAspectRatio()}>
                 <MuxPlayer
                   ref={this.muxPlayerRef}
                   data-testid="muxplayer"

@@ -38,7 +38,9 @@ vi.mock('./util/muxApi', () => ({
         generateSubtitles: vi.fn(() => Promise.resolve({ data: {} })),
         deleteStaticRendition: vi.fn(() => Promise.resolve()),
         createStaticRendition: vi.fn(() => Promise.resolve()),
-        getSignedUrlTokens: vi.fn(() => Promise.resolve({ playbackToken: '', posterToken: '', storyboardToken: '' })),
+        getSignedUrlTokens: vi.fn(() =>
+          Promise.resolve({ playbackToken: '', posterToken: '', storyboardToken: '' })
+        ),
       })
     ),
   },
