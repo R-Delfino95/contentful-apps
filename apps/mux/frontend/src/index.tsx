@@ -472,13 +472,13 @@ export class App extends React.Component<AppProps, AppState> {
     try {
       const muxUpload = await this.muxApi.getUpload(this.state.value.uploadId);
 
-      if ('error' in muxUpload) {
+      if (muxUpload.error) {
         this.setAssetError(muxUpload.error.messages[0]);
         return;
       }
 
       if (muxUpload.data?.status === 'errored') {
-        this.setAssetError(muxUpload.data.errors.messages[0]);
+        this.setAssetError(muxUpload.data.errors?.messages[0] ?? 'Unknown error');
         return;
       }
 
@@ -589,11 +589,11 @@ export class App extends React.Component<AppProps, AppState> {
       });
 
       let assetError;
-      if ('error' in assetRes) {
+      if (assetRes.error) {
         assetError = assetRes.error.messages[0] || 'Unknown error';
       }
       if (assetRes.data?.status === 'errored') {
-        assetError = assetRes.data.errors.messages[0] || 'Unknown error';
+        assetError = assetRes.data.errors?.messages[0] || 'Unknown error';
       }
 
       if (assetError) {
@@ -623,12 +623,11 @@ export class App extends React.Component<AppProps, AppState> {
       const audioOnly =
         'max_stored_resolution' in asset && asset.max_stored_resolution === 'Audio only';
 
-      const erroredTracks =
-        'tracks' in asset ? asset.tracks.filter((track) => track.status === 'errored') : undefined;
+      const erroredTracks = asset.tracks?.filter((track) => track.status === 'errored');
 
       // Notify of the error and delete any failed tracks (like captions) so the track can be re-uploaded.
       if (erroredTracks && erroredTracks.length > 0) {
-        this.props.sdk.notifier.error(erroredTracks[0].error.messages[0]);
+        this.props.sdk.notifier.error(erroredTracks[0].error?.messages[0] ?? 'Track error');
         try {
           await this.muxApi.deleteTrack(this.state.value.assetId, erroredTracks[0].id);
         } catch (error) {
@@ -643,7 +642,7 @@ export class App extends React.Component<AppProps, AppState> {
       let audioTracks: Track[] | undefined = undefined;
       let captions: Track[] | undefined = undefined;
       let trackPreparing = false;
-      if ('tracks' in asset) {
+      if (asset.tracks) {
         asset.tracks.forEach((track) => {
           trackPreparing = track.status === 'preparing';
           if (track.type === 'audio') {

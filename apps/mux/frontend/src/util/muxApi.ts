@@ -1,7 +1,7 @@
 import { AppExtensionSDK, FieldExtensionSDK } from '@contentful/app-sdk';
 import { PlainClientAPI } from 'contentful-management';
 import { ModalData } from '../components/AssetConfiguration/MuxAssetConfigurationModal';
-import { InstallationParams, ResolutionType } from './types';
+import { InstallationParams, ResolutionType, Track } from './types';
 
 export interface AssetSettings {
   passthrough?: string;
@@ -60,6 +60,35 @@ export class MuxApiError extends Error {
   }
 }
 
+interface MuxErrorBody {
+  messages: string[];
+}
+
+interface MuxAssetData {
+  id: string;
+  status: string;
+  playback_ids?: Array<{ id: string; policy: string }>;
+  tracks?: Track[];
+  max_stored_resolution?: string;
+  errors?: MuxErrorBody;
+  [key: string]: unknown;
+}
+
+interface MuxUploadData {
+  id: string;
+  status: string;
+  asset_id?: string;
+  errors?: MuxErrorBody;
+}
+
+export interface MuxDataResponse<T> {
+  data: T;
+  error?: MuxErrorBody;
+}
+
+export type MuxAssetResponse = MuxDataResponse<MuxAssetData>;
+export type MuxUploadResponse = MuxDataResponse<MuxUploadData>;
+
 export class MuxApiService {
   private static instance: MuxApiService | null = null;
   private cmaClient: PlainClientAPI;
@@ -92,10 +121,15 @@ export class MuxApiService {
     }
   }
 
-  private async callAction<T>(actionName: string, parameters: Record<string, any>): Promise<T> {
+  private async callAction<T>(actionName: string, parameters: Record<string, unknown>): Promise<T> {
     const actionId = this.actionIds[actionName];
     if (!actionId) {
       throw new MuxApiError(`App Action '${actionName}' not found.`);
+    }
+
+    const appDefinitionId = this.sdk.ids.app;
+    if (!appDefinitionId) {
+      throw new MuxApiError('App definition ID is not available.');
     }
 
     const {
@@ -103,7 +137,7 @@ export class MuxApiService {
     } = await this.cmaClient.appActionCall.createWithResponse(
       {
         organizationId: this.sdk.ids.organization,
-        appDefinitionId: this.sdk.ids.app!,
+        appDefinitionId,
         appActionId: actionId,
       },
       { parameters }
@@ -126,17 +160,17 @@ export class MuxApiService {
 
   // --- Asset operations ---
 
-  async getAsset(assetId: string): Promise<any> {
+  async getAsset(assetId: string): Promise<MuxAssetResponse> {
     return this.callProxy('GET', `/video/v1/assets/${assetId}`);
   }
 
-  async createAsset(requestBody: any): Promise<any> {
+  async createAsset(requestBody: Record<string, unknown>): Promise<MuxAssetResponse> {
     return this.callProxy('POST', '/video/v1/assets', JSON.stringify(requestBody));
   }
 
   // --- Upload operations ---
 
-  async createUpload(requestBody: any): Promise<{ id: string; url: string }> {
+  async createUpload(requestBody: Record<string, unknown>): Promise<{ id: string; url: string }> {
     const result = await this.callProxy<{ data: { id: string; url: string } }>(
       'POST',
       '/video/v1/uploads',
@@ -145,7 +179,7 @@ export class MuxApiService {
     return result.data;
   }
 
-  async getUpload(uploadId: string): Promise<any> {
+  async getUpload(uploadId: string): Promise<MuxUploadResponse> {
     return this.callProxy('GET', `/video/v1/uploads/${uploadId}`);
   }
 
@@ -178,8 +212,8 @@ export class MuxApiService {
       text_type?: string;
       closed_captions?: boolean;
     }
-  ): Promise<any> {
-    return this.callProxy('POST', `/video/v1/assets/${assetId}/tracks`, JSON.stringify(options));
+  ): Promise<void> {
+    await this.callProxy('POST', `/video/v1/assets/${assetId}/tracks`, JSON.stringify(options));
   }
 
   async deleteTrack(assetId: string, trackId: string): Promise<void> {
@@ -190,7 +224,7 @@ export class MuxApiService {
     assetId: string,
     trackId: string,
     options: { language_code: string; name: string }
-  ): Promise<any> {
+  ): Promise<void> {
     const body = JSON.stringify({
       generated_subtitles: [
         {
@@ -199,7 +233,7 @@ export class MuxApiService {
         },
       ],
     });
-    return this.callProxy(
+    await this.callProxy(
       'POST',
       `/video/v1/assets/${assetId}/tracks/${trackId}/generate-subtitles`,
       body
@@ -337,13 +371,13 @@ export async function addByURL({
 
   const muxUpload = await muxApi.createAsset(requestBody);
 
-  if ('error' in muxUpload) {
+  if (muxUpload.error) {
     setAssetError(muxUpload.error.messages[0]);
     return;
   }
 
   if (muxUpload.data.status === 'errored') {
-    setAssetError(muxUpload.data.errors.messages[0]);
+    setAssetError(muxUpload.data.errors?.messages[0] ?? 'Unknown error');
     return;
   }
 

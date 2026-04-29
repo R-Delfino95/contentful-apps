@@ -138,6 +138,7 @@ export interface BaseTrack {
   passthrough?: string;
   name?: string;
   language_code?: string;
+  error?: { messages: string[] };
 }
 
 export interface AudioTrack extends BaseTrack {
