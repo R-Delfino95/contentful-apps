@@ -10,6 +10,7 @@ import {
   ResumePayload,
   RunStatus,
   TabsImagesSuspendPayload,
+  WorkflowFailure,
 } from '@types';
 
 const AGENTS_API_HEADERS = {
@@ -43,6 +44,7 @@ export interface AgentRunData {
     workflowId?: string;
     workflowRunId?: string;
     suspendPayload?: TabsImagesSuspendPayload | MappingReviewSuspendPayload;
+    workflowFailure?: WorkflowFailure;
     googleDocPayload?: Record<string, unknown>;
   };
   payload?: string;
