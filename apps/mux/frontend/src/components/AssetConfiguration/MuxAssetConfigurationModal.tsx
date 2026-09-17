@@ -5,6 +5,7 @@ import { PlaybackPolicySelector } from './PlaybackPolicySelector';
 import { CaptionsConfiguration, CaptionsConfig } from './CaptionsConfiguration';
 import Mp4RenditionsConfiguration, { Mp4RenditionsConfig } from './Mp4RenditionsConfiguration';
 import MetadataConfiguration, { MetadataConfig } from './MetadataConfiguration';
+import AutomationConfiguration from './AutomationConfiguration';
 import { MuxContentfulObject, PolicyType } from '../../util/types';
 import { FieldExtensionSDK } from '@contentful/app-sdk';
 
@@ -49,6 +50,11 @@ export interface ModalData {
   captionsConfig: CaptionsConfig;
   mp4Config: Mp4RenditionsConfig;
   metadataConfig: MetadataConfig;
+  /**
+   * Robots directives to attach at asset creation, pre-filled from the installation parameters
+   * and deselectable per upload. Empty means no automation on this upload.
+   */
+  directiveIds: string[];
 }
 
 interface MuxAssetConfigurationModalProps {
@@ -58,6 +64,7 @@ interface MuxAssetConfigurationModalProps {
   installationParams: {
     muxEnableSignedUrls: boolean;
     muxEnableDRM?: boolean;
+    muxDefaultDirectiveIds?: string[];
   };
   isEditMode?: boolean;
   asset?: MuxContentfulObject;
@@ -82,6 +89,10 @@ const ModalContent: FC<MuxAssetConfigurationModalProps> = ({
   // Use explicit defaults to handle undefined values from SDK
   const muxEnableSignedUrls = installationParams.muxEnableSignedUrls ?? false;
   const muxEnableDRM = installationParams.muxEnableDRM ?? false;
+  const defaultDirectiveIds = useMemo(
+    () => installationParams.muxDefaultDirectiveIds ?? [],
+    [installationParams.muxDefaultDirectiveIds]
+  );
 
   // Detect if the input is an audio-only file
   const isAudioOnly = useMemo(() => isAudioFile(file, pendingUploadURL), [file, pendingUploadURL]);
@@ -116,7 +127,18 @@ const ModalContent: FC<MuxAssetConfigurationModalProps> = ({
         externalId: undefined,
       },
     },
+    directiveIds: defaultDirectiveIds,
   });
+
+  // The configured defaults arrive from installation parameters, which are not available on the
+  // very first render in every location, so re-seed the selection when they turn up.
+  useEffect(() => {
+    setModalData((prev) =>
+      prev.directiveIds.length === 0 && defaultDirectiveIds.length > 0
+        ? { ...prev, directiveIds: defaultDirectiveIds }
+        : prev
+    );
+  }, [defaultDirectiveIds]);
 
   // Update policy when audio detection changes (e.g., when modal opens with new file)
   useEffect(() => {
@@ -159,6 +181,9 @@ const ModalContent: FC<MuxAssetConfigurationModalProps> = ({
             externalId: asset.meta?.external_id,
           },
         },
+        // Editing an existing asset creates nothing, so there is no `new_asset_settings` for a
+        // directive to ride on. Ad-hoc runs live in the Robots tab instead.
+        directiveIds: [],
       });
     }
   }, [isEditMode, asset]);
@@ -264,6 +289,14 @@ const ModalContent: FC<MuxAssetConfigurationModalProps> = ({
                   onMp4ConfigChange={(config) =>
                     setModalData((prev) => ({ ...prev, mp4Config: config }))
                   }
+                />
+              </Accordion.Item>
+
+              <Accordion.Item title="Automation">
+                <AutomationConfiguration
+                  availableDirectiveIds={defaultDirectiveIds}
+                  selectedDirectiveIds={modalData.directiveIds}
+                  onChange={(directiveIds) => setModalData((prev) => ({ ...prev, directiveIds }))}
                 />
               </Accordion.Item>
             </>

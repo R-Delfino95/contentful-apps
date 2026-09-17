@@ -1,6 +1,7 @@
 import { FieldExtensionSDK } from '@contentful/app-sdk';
 import { ModalData } from '../components/AssetConfiguration/MuxAssetConfigurationModal';
 import { MuxApiService } from './muxApi';
+import { RobotsDirectiveRunRecord, RobotsJobRecord, RobotsOutputs } from './robotsTypes';
 
 export interface AppProps {
   sdk: FieldExtensionSDK;
@@ -16,6 +17,8 @@ export interface InstallationParams {
   muxDomain?: string;
   muxEnableDRM?: boolean;
   muxDRMConfigurationId?: string;
+  /** Robots directives attached to every asset this app creates. */
+  muxDefaultDirectiveIds?: string[];
 }
 
 export interface AppState {
@@ -39,6 +42,8 @@ export interface AppState {
   pendingUploadURL: string | null;
   isPolling: boolean;
   initialResyncDone: boolean;
+  /** Lifted out of `<Tabs>` so the Robots tab only fetches once it is actually looked at. */
+  selectedTab: string;
 }
 
 export type ResolutionType = 'highest' | 'audio-only';
@@ -89,6 +94,12 @@ export interface MuxContentfulObject {
   };
   passthrough?: string;
   pendingActions?: PendingActions;
+  /** v4. Finished Robots jobs for this asset. In-flight jobs are never stored — see robotsTypes. */
+  robotsJobs?: Array<RobotsJobRecord>;
+  /** v5. Summary and moderation output, so the Delivery API returns it with the entry. */
+  robotsOutputs?: RobotsOutputs;
+  /** v6. Directive runs started from this entry, so their jobs stay claimable — see ADR-0009. */
+  robotsDirectiveRuns?: Array<RobotsDirectiveRunRecord>;
 }
 
 export interface Error {

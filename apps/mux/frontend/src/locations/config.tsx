@@ -14,6 +14,7 @@ import {
 import MuxLogoSvg from '../images/mux-logo.svg';
 import './config.css';
 import ApiClient from '../util/apiClient';
+import RobotsConfiguration from '../components/RobotsConfiguration';
 
 import {
   Checkbox,
@@ -43,6 +44,14 @@ interface IParameters {
   muxDomain?: string;
   muxEnableDRM?: boolean;
   muxDRMConfigurationId?: string;
+  /**
+   * Robots directives attached to every asset this app creates.
+   *
+   * Duplicated with `InstallationParams` in `util/types.tsx` — the two shapes describe the same
+   * stored object from the config screen's and the field editor's side respectively, and were
+   * already duplicated before this key.
+   */
+  muxDefaultDirectiveIds?: string[];
 }
 
 interface IState {
@@ -224,6 +233,7 @@ class Config extends React.Component<ConfigProps, IState> {
         muxDomain,
         muxEnableDRM,
         muxDRMConfigurationId,
+        muxDefaultDirectiveIds,
       },
       contentTypes,
       compatibleFields,
@@ -420,6 +430,27 @@ class Config extends React.Component<ConfigProps, IState> {
                 </FormControl.HelpText>
               </FormControl>
             )}
+          </Form>
+          <hr className="config-splitter" />
+          <Form>
+            <Heading marginBottom="none">Robots: automatic AI workflows</Heading>
+            <Box marginTop="spacingM">
+              <RobotsConfiguration
+                tokenId={muxAccessTokenId}
+                tokenSecret={muxAccessTokenSecret}
+                directiveIds={muxDefaultDirectiveIds ?? []}
+                onChange={(ids) =>
+                  this.setState({
+                    parameters: {
+                      ...this.state.parameters,
+                      // Stored as `undefined` rather than `[]` when empty, so an installation that
+                      // never touches Robots keeps exactly the parameters it has today.
+                      muxDefaultDirectiveIds: ids.length > 0 ? ids : undefined,
+                    },
+                  })
+                }
+              />
+            </Box>
           </Form>
           <hr className="config-splitter" />
           <Checkbox

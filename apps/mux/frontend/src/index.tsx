@@ -30,6 +30,8 @@ import Mp4RenditionsPanel from './components/AssetConfiguration/Mp4RenditionsPan
 import TrackForm from './components/TrackForm/TrackForm';
 import MetadataPanel from './components/AssetConfiguration/MetadataPanel';
 import PlaybackSwitcher from './components/AssetConfiguration/Playback/PlaybackSwitcher';
+import RobotsPanel from './components/Robots/RobotsPanel';
+import RobotsErrorBoundary from './components/Robots/RobotsErrorBoundary';
 
 import {
   type InstallationParams,
@@ -54,6 +56,7 @@ import {
   type SignedTokens,
 } from './util/muxApi';
 import Sidebar from './locations/Sidebar';
+import { deriveFieldVersion } from './util/muxFieldVersion';
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -71,6 +74,85 @@ function normalizeForDiff<T>(obj: T): T {
       }, {} as Record<string, unknown>) as T;
   }
   return obj;
+}
+
+/**
+ * A description of one change to the field value. Given whatever is currently stored, return the
+ * value that should replace it — or the input untouched to say "nothing to do".
+ */
+export type FieldMutator = (
+  current: MuxContentfulObject | undefined
+) => MuxContentfulObject | undefined;
+
+/** Per-call options for `updateField`. */
+export interface UpdateFieldOptions {
+  /**
+   * Ask the web app to persist the entry as soon as the value lands, rather than waiting for its
+   * own autosave.
+   *
+   * `sdk.field.setValue` resolves when the value has crossed the postMessage bridge into the
+   * Contentful web app — not when anything is stored. For most writes that is fine: the asset
+   * mirror is re-derived from Mux on the next open, so losing one is free. For a write that
+   * records something which costs money and cannot be re-derived — a Robots job already running
+   * and billing — it is not, because closing the tab in that window orphans it.
+   *
+   * Off by default. Saving is a write to the entry, and turning it on for every field write would
+   * mean an entry save several times a second while an asset prepares.
+   */
+  save?: boolean;
+}
+
+/**
+ * A write that was parked behind the publish gate and then dropped without ever reaching the
+ * field.
+ *
+ * `updateField` used to return from the deferred path without writing *and without throwing*, so
+ * `await updateField(...)` resolved cleanly for a change that no longer existed anywhere. A
+ * caller has to be able to tell "written" from "queued and then dropped" — a silent success on a
+ * write that never happened is the defect, not the dropping.
+ */
+export class DiscardedFieldWriteError extends Error {
+  /** The underlying failure, when there was one. Absent when the write was simply dropped. */
+  readonly reason?: unknown;
+
+  constructor(message: string, reason?: unknown) {
+    super(message);
+    this.name = 'DiscardedFieldWriteError';
+    this.reason = reason;
+  }
+}
+
+/** A mutator parked behind the publish gate, with the promise its caller is still holding. */
+interface DeferredMutation {
+  mutate: FieldMutator;
+  options?: UpdateFieldOptions;
+  resolve: () => void;
+  reject: (error: unknown) => void;
+}
+
+/** How long the publish gate stays shut before we assume the publish function is not coming. */
+const PUBLISH_GATE_TIMEOUT_MS = 90_000;
+
+/**
+ * Which Mux tracks belong in `captions`.
+ *
+ * **Duplicated in `functions/src/onPublish.ts` (`isCaptionTrack`) — change one, change the
+ * other.** The browser and the publish function are separate packages with independent builds, so
+ * there is no module to share; the predicate is small enough to state twice and too important to
+ * let drift.
+ *
+ * It has drifted before. The function used to take `type === 'text'` at any status while this
+ * side took subtitles that are ready or preparing, so a publish swapped the field's caption list
+ * for a differently-filtered one and errored or non-subtitle text tracks reappeared on the entry.
+ */
+function isCaptionTrack(track: { text_type?: string; status?: string }): boolean {
+  return (
+    track.text_type === 'subtitles' && (track.status === 'ready' || track.status === 'preparing')
+  );
+}
+
+function sameNormalized(a: unknown, b: unknown): boolean {
+  return JSON.stringify(normalizeForDiff(a)) === JSON.stringify(normalizeForDiff(b));
 }
 
 // Helper for updating pendingActions
@@ -98,6 +180,19 @@ export class App extends React.Component<AppProps, AppState> {
   fileInputRef = React.createRef<HTMLInputElement>();
   muxPlayerRef = React.createRef<any>(); // eslint-disable-line @typescript-eslint/no-explicit-any
   private pollPending = false;
+
+  /**
+   * Serialises every read-modify-write of the field value. See `updateField`.
+   * Never rejects, so one failed write cannot break the chain for the next one.
+   */
+  private writeChain: Promise<void> = Promise.resolve();
+  /** Mutations parked while the publish function is rewriting the field server-side. */
+  private deferredMutations: DeferredMutation[] = [];
+  private publishGateOpen = false;
+  private publishGateTimer?: ReturnType<typeof setTimeout>;
+  /** Tracks the last publish we reacted to, so one publish is handled once. */
+  private lastHandledPublishedAt?: string;
+  private isUnmounted = false;
 
   constructor(props: AppProps) {
     super(props);
@@ -136,6 +231,7 @@ export class App extends React.Component<AppProps, AppState> {
       pendingUploadURL: null,
       isPolling: false,
       initialResyncDone: false,
+      selectedTab: 'captions',
       captionname: undefined,
       audioName: undefined,
       playbackToken: undefined,
@@ -149,6 +245,207 @@ export class App extends React.Component<AppProps, AppState> {
   // eslint-disable-next-line  @typescript-eslint/ban-types
   detachExternalChangeHandler: Function | null = null;
   detachSysChangeHandler: Function | null = null;
+
+  /**
+   * The one place the field value is written.
+   *
+   * Every caller describes only its own change; the current value is read through
+   * `sdk.field.getValue()` rather than React state, and concurrent calls are chained so they
+   * apply one after another. That is what makes two independent poll loops safe: before this
+   * existed, eight of the ten read-modify-write sites read `this.state.value`, which
+   * `onExternalChange` only refreshes asynchronously — so a Robots write landing mid-flight in
+   * the asset loop got rebuilt away, and an asset write landing mid-flight in the Robots loop
+   * clobbered freshly-polled asset state. With a single loop that staleness was invisible; a
+   * second writer is what turns it into a bug.
+   *
+   * Two other invariants live here because this is the only place they can be enforced:
+   *
+   * - **No-op writes never reach the entry.** Every `setValue` bumps the entry version and flips
+   *   a published entry to "Changed", so a poll tick that learns nothing must not write. This is
+   *   also what keeps entries that predate Robots byte-identical to what is on disk today.
+   * - **Nothing is written while the publish function is mid-rewrite.** See `openPublishGate`.
+   *
+   * The returned promise settles when the change has actually been applied — including when it
+   * had to wait behind the publish gate first. It rejects with `DiscardedFieldWriteError` if the
+   * change is dropped instead, so a caller recording something that costs money can tell the two
+   * apart. `options.save` additionally asks the web app to persist the entry; see
+   * `UpdateFieldOptions`.
+   */
+  updateField = (mutate: FieldMutator, options?: UpdateFieldOptions): Promise<void> => {
+    /**
+     * Set when this call is parked behind the publish gate. Settled later by whoever drains the
+     * queue — `closePublishGate` when the function's publish lands, or the unmount flush.
+     */
+    let parked: Promise<void> | undefined;
+
+    const apply = async (): Promise<void> => {
+      if (this.isUnmounted) return;
+
+      if (this.publishGateOpen) {
+        parked = new Promise<void>((resolve, reject) => {
+          this.deferredMutations.push({ mutate, options, resolve, reject });
+        });
+        return;
+      }
+
+      const current = this.props.sdk.field.getValue() as MuxContentfulObject | undefined;
+      const next = mutate(current);
+
+      if (next === current || sameNormalized(current, next)) return;
+
+      await this.props.sdk.field.setValue(next);
+      // Keep React state in step immediately rather than waiting for `onValueChanged`, so the UI
+      // does not render a value the field no longer holds.
+      if (!this.isUnmounted) this.setState({ value: next });
+
+      // After the write, and only when there was one: a no-op write must stay a no-op, or the
+      // whole "entries that predate Robots are byte-identical" property (ADR-0006) turns into an
+      // entry save on every poll tick.
+      if (options?.save) await this.saveEntry();
+    };
+
+    const chained = this.writeChain.then(apply);
+    // The chain itself must survive a rejected write; the caller still gets the real promise.
+    this.writeChain = chained.then(
+      () => undefined,
+      () => undefined
+    );
+    // The chain deliberately does *not* wait on `parked`: a parked mutator is released by
+    // `closePublishGate`, which writes through this same chain, so blocking the chain behind it
+    // would deadlock the release. Only the caller's promise waits.
+    return chained.then(() => parked);
+  };
+
+  /**
+   * Persist the entry, best effort.
+   *
+   * A failure here is not a write failure and must not be reported as one — `setValue` has
+   * already resolved, so the value is in the editor's buffer and the web app's own autosave will
+   * still get to it. Reporting it as a failed write would make callers retry a write that
+   * happened.
+   */
+  private saveEntry = async (): Promise<void> => {
+    try {
+      await this.props.sdk.entry.save();
+    } catch (error) {
+      console.warn('[mux] Wrote the field but could not save the entry.', error);
+    }
+  };
+
+  /**
+   * Stops browser writes while the publish function rewrites the field server-side.
+   *
+   * `onPublish` runs in two cycles: it clears `pendingActions` and updates the entry, then
+   * separately rebuilds the field from fresh Mux data and republishes. The app's existing guard
+   * keyed off `pendingActions` still being present, so it lifted one cycle *before* the
+   * destructive write landed. A Robots poll writing in that window used to be overwritten and
+   * then published. `onPublish` merging instead of replacing is what makes the remaining window
+   * survivable; this gate is what makes it narrow. Both are needed — neither alone is enough.
+   *
+   * A heuristic, not a lock: the browser cannot observe the function directly, so the gate is
+   * released on the function's own publish, or by timeout if it never arrives.
+   */
+  private openPublishGate = () => {
+    this.publishGateOpen = true;
+    if (this.publishGateTimer) clearTimeout(this.publishGateTimer);
+    this.publishGateTimer = setTimeout(() => {
+      console.warn('[mux] Publish gate timed out waiting for the publish function; resuming.');
+      this.closePublishGate();
+    }, PUBLISH_GATE_TIMEOUT_MS);
+  };
+
+  private closePublishGate = () => {
+    if (this.publishGateTimer) {
+      clearTimeout(this.publishGateTimer);
+      this.publishGateTimer = undefined;
+    }
+    if (!this.publishGateOpen) return;
+    this.publishGateOpen = false;
+
+    // Re-apply against whatever the function left behind, not against what we saw before it ran.
+    const queued = this.deferredMutations;
+    this.deferredMutations = [];
+    for (const deferred of queued) {
+      // The caller has been holding a promise this whole time. Hand it the real outcome of the
+      // re-applied write — including a rejection, and including being parked again if a second
+      // publish has already re-opened the gate.
+      this.updateField(deferred.mutate, deferred.options).then(deferred.resolve, deferred.reject);
+    }
+  };
+
+  /**
+   * Apply everything parked behind the publish gate, in one direct write, as the component goes
+   * away.
+   *
+   * This used to be `this.deferredMutations = []`. Reachable, and completely silent: stage a
+   * caption change, publish, start a Robots job inside the 90 s gate window, close the tab — the
+   * job record is dropped, the job keeps running and billing, and the caller's `await` had
+   * already resolved as if it were stored.
+   *
+   * Best effort by construction, and deliberately *not* routed through `writeChain`: a promise
+   * chained during unmount may never get a turn. What it does guarantee is the other half —
+   * every parked caller learns whether its change was written.
+   */
+  private flushDeferredMutations = (): void => {
+    const queued = this.deferredMutations;
+    this.deferredMutations = [];
+    if (queued.length === 0) return;
+
+    let current: MuxContentfulObject | undefined;
+    try {
+      current = this.props.sdk.field.getValue() as MuxContentfulObject | undefined;
+    } catch (error) {
+      for (const deferred of queued) {
+        deferred.reject(
+          new DiscardedFieldWriteError('Could not read the field value while unmounting.', error)
+        );
+      }
+      return;
+    }
+
+    const applied: DeferredMutation[] = [];
+    let next = current;
+    for (const deferred of queued) {
+      try {
+        next = deferred.mutate(next);
+        applied.push(deferred);
+      } catch (error) {
+        // One bad mutator must not take the rest of the queue down with it.
+        deferred.reject(error);
+      }
+    }
+
+    if (applied.length === 0) return;
+
+    if (next === current || sameNormalized(current, next)) {
+      // Nothing left to write: the parked changes are already in the stored value. That is an
+      // applied write, not a dropped one.
+      for (const deferred of applied) deferred.resolve();
+      return;
+    }
+
+    const wantsSave = applied.some((deferred) => deferred.options?.save);
+
+    Promise.resolve(this.props.sdk.field.setValue(next))
+      .then(() => {
+        for (const deferred of applied) deferred.resolve();
+        // Nothing is going to autosave on behalf of a closing tab, so this is the one place the
+        // save matters most — and `saveEntry` never throws, so it cannot turn a written value
+        // into a reported failure.
+        if (wantsSave) return this.saveEntry();
+        return undefined;
+      })
+      .catch((error) => {
+        for (const deferred of applied) {
+          deferred.reject(
+            new DiscardedFieldWriteError(
+              'The field write queued behind a publish was dropped when the editor closed.',
+              error
+            )
+          );
+        }
+      });
+  };
 
   checkForValidAsset = async () => {
     if (!(this.state.value && this.state.value.assetId)) return false;
@@ -196,24 +493,33 @@ export class App extends React.Component<AppProps, AppState> {
 
     // Subscribe to any `sys` change to detect publish
     const initialSys = this.props.sdk.entry.getSys();
+    this.lastHandledPublishedAt = initialSys.publishedAt;
     this.detachSysChangeHandler = this.props.sdk.entry.onSysChanged(async (newSys) => {
       const wasPublished =
         !!newSys.publishedVersion && newSys.version === newSys.publishedVersion + 1;
 
-      const justNow = !initialSys.publishedAt || initialSys.publishedAt !== newSys.publishedAt;
+      const justNow =
+        !this.lastHandledPublishedAt || this.lastHandledPublishedAt !== newSys.publishedAt;
 
-      if (wasPublished && justNow) {
-        // If there are pendingActions, the onPublish function will handle
-        // the Mux API changes and update+publish the entry when done.
-        // Resyncing now would read stale Mux data and cause version conflicts.
-        // The publish triggered by onPublish will fire this handler again
-        // (without pendingActions), doing a clean resync at that point.
-        const currentValue = this.props.sdk.field.getValue();
-        if (currentValue?.pendingActions) {
-          return;
-        }
-        await this.resync();
+      if (!wasPublished || !justNow) return;
+      this.lastHandledPublishedAt = newSys.publishedAt;
+
+      // If there are pendingActions, the onPublish function will handle
+      // the Mux API changes and update+publish the entry when done.
+      // Resyncing now would read stale Mux data and cause version conflicts.
+      // The publish triggered by onPublish will fire this handler again
+      // (without pendingActions), doing a clean resync at that point.
+      const currentValue = this.props.sdk.field.getValue();
+      if (currentValue?.pendingActions) {
+        // The function is about to rewrite this field from the server. Hold every browser write
+        // until its own publish lands, otherwise anything written in between is overwritten.
+        this.openPublishGate();
+        return;
       }
+
+      // This publish is the function's republish — the gate can lift and queued writes can flush.
+      this.closePublishGate();
+      await this.resync();
     });
 
     if (this.state.error) return;
@@ -260,13 +566,26 @@ export class App extends React.Component<AppProps, AppState> {
   }
 
   componentDidUpdate() {
-    if (this.state.value?.assetId && !this.state.initialResyncDone) {
+    // `muxApi` is assigned by `componentDidMount`, which awaits a CMA round trip first. An update
+    // that lands inside that window — a tab click on a slow connection — used to resync with no
+    // client at all and throw an unhandled `TypeError` from inside a lifecycle method. Deferred
+    // rather than skipped: `initialResyncDone` stays false, so the next update tries again.
+    if (this.muxApi && this.state.value?.assetId && !this.state.initialResyncDone) {
       this.resync({ silent: true });
       this.setState({ initialResyncDone: true });
     }
   }
 
   componentWillUnmount() {
+    // Drained *before* the unmount flag goes up, because `updateField` refuses to write once it
+    // is set. Anything still parked is a change whose caller has been told nothing yet.
+    this.flushDeferredMutations();
+    this.isUnmounted = true;
+    this.publishGateOpen = false;
+    if (this.publishGateTimer) {
+      clearTimeout(this.publishGateTimer);
+      this.publishGateTimer = undefined;
+    }
     if (this.detachExternalChangeHandler) {
       this.detachExternalChangeHandler();
     }
@@ -369,6 +688,15 @@ export class App extends React.Component<AppProps, AppState> {
     return url.protocol === 'http:' || url.protocol === 'https:';
   };
 
+  /**
+   * Does the stored value hold anything a fresh `{ assetId }` would destroy?
+   *
+   * Only Robots records and the caption list count. The rest of the value is an asset mirror that
+   * the poll rebuilds from Mux within a second of the write, so losing it costs nothing.
+   */
+  private holdsUnrecoverableData = (value: MuxContentfulObject | undefined): boolean =>
+    !!(value?.robotsJobs?.length || value?.robotsOutputs || value?.captions?.length);
+
   addVideoByInput = async (e): Promise<void> => {
     e.preventDefault();
     const input = e.target.muxvideoinput.value.trim();
@@ -377,6 +705,24 @@ export class App extends React.Component<AppProps, AppState> {
     if (this.isURL(input)) {
       this.setState({ modalAssetConfigurationVisible: true, pendingUploadURL: input });
       return;
+    }
+
+    // This is one of the three writes ADR-0001 keeps off `updateField` because it deliberately
+    // discards everything. Discarding is right when the field is empty, which is the only state
+    // this form is reachable from now that the editor branch keys off `assetId`. The confirm is
+    // for the case that gets us here anyway — a value that still holds Robots records or a
+    // caption list is not an empty field, and replacing it silently is not a recoverable action.
+    const current = this.props.sdk.field.getValue() as MuxContentfulObject | undefined;
+    if (this.holdsUnrecoverableData(current) && current?.assetId !== input) {
+      const confirmed = await this.props.sdk.dialogs.openConfirm({
+        title: 'Replace this video?',
+        message:
+          'This field already holds data for another Mux asset — Robots results and caption records that are stored nowhere else. Replacing it discards them permanently.',
+        intent: 'negative',
+        confirmLabel: 'Yes, replace it',
+        cancelLabel: 'Cancel',
+      });
+      if (!confirmed) return;
     }
 
     await this.props.sdk.field.setValue({
@@ -569,7 +915,10 @@ export class App extends React.Component<AppProps, AppState> {
       return;
     }
 
-    if (!this.state.value || !this.state.value.assetId) {
+    // Read the field, not React state: `onValueChanged` refreshes state asynchronously, so with a
+    // second writer in play state can lag behind what is actually stored.
+    const currentValue = this.props.sdk.field.getValue() as MuxContentfulObject | undefined;
+    if (!currentValue || !currentValue.assetId) {
       return;
     }
 
@@ -578,7 +927,7 @@ export class App extends React.Component<AppProps, AppState> {
     }
 
     try {
-      const assetRes = await this.getAsset(this.state.value.assetId);
+      const assetRes = await this.getAsset(currentValue.assetId);
 
       if (!assetRes) {
         throw Error('Something went wrong, we were not able to get the asset.');
@@ -598,10 +947,9 @@ export class App extends React.Component<AppProps, AppState> {
 
       if (assetError) {
         this.setAssetError(assetError);
-        await this.props.sdk.field.setValue({
-          ...this.state.value,
-          error: assetError,
-        });
+        await this.updateField((current) =>
+          current ? { ...current, error: assetError } : current
+        );
         if (!isRecursiveCall) {
           this.setState({ isPolling: false });
         }
@@ -629,7 +977,7 @@ export class App extends React.Component<AppProps, AppState> {
       if (erroredTracks && erroredTracks.length > 0) {
         this.props.sdk.notifier.error(erroredTracks[0].error?.messages[0] ?? 'Track error');
         try {
-          await this.muxApi.deleteTrack(this.state.value.assetId, erroredTracks[0].id);
+          await this.muxApi.deleteTrack(currentValue.assetId, erroredTracks[0].id);
         } catch (error) {
           if (error instanceof MuxApiError) {
             this.props.sdk.notifier.error('Error deleting track: ' + error.message);
@@ -644,47 +992,57 @@ export class App extends React.Component<AppProps, AppState> {
       let trackPreparing = false;
       if (asset.tracks) {
         asset.tracks.forEach((track) => {
-          trackPreparing = track.status === 'preparing';
+          // Accumulated, not assigned. This was `trackPreparing = track.status === 'preparing'`,
+          // so only the *last* track counted: a caption still preparing stopped the poll loop as
+          // soon as any ready track followed it in the list, and the entry kept whatever the
+          // half-finished track looked like until someone reloaded.
+          trackPreparing = trackPreparing || track.status === 'preparing';
           if (track.type === 'audio') {
             audioTracks = [...(audioTracks || []), track];
-          } else if (
-            track.text_type === 'subtitles' &&
-            (track.status === 'ready' || track.status === 'preparing')
-          ) {
+          } else if (isCaptionTrack(track)) {
             captions = [...(captions || []), track];
           }
         });
       }
 
-      const newValue = {
-        version: this.state.value.version ?? 3,
-        uploadId: this.state.value.uploadId || undefined,
-        assetId: this.state.value.assetId,
-        playbackId: (publicPlayback && publicPlayback.id) || undefined,
-        signedPlaybackId: (signedPlayback && signedPlayback.id) || undefined,
-        drmPlaybackId: (drmPlayback && drmPlayback.id) || undefined,
-        ready: asset.status === 'ready',
-        ratio: asset.aspect_ratio || undefined,
-        max_stored_resolution: asset.max_stored_resolution || undefined,
-        max_stored_frame_rate: asset.max_stored_frame_rate || undefined,
-        duration: asset.duration || undefined,
-        audioOnly: audioOnly,
-        error: assetError || undefined,
-        created_at: asset.created_at ? Number(asset.created_at) : undefined,
-        captions: captions,
-        audioTracks: audioTracks,
-        static_renditions: asset.static_renditions?.files || undefined,
-        is_live: asset.is_live || undefined,
-        live_stream_id: asset.live_stream_id || undefined,
-        meta: asset.meta || undefined,
-        passthrough: asset.passthrough || undefined,
-        pendingActions: this.state.value.pendingActions || undefined,
-      };
-      const oldNorm = JSON.stringify(normalizeForDiff(this.state.value));
-      const newNorm = JSON.stringify(normalizeForDiff(newValue));
-      if (oldNorm !== newNorm) {
-        await this.props.sdk.field.setValue(newValue);
-      }
+      // The asset mirror, overlaid onto whatever is stored rather than replacing it.
+      //
+      // This used to build a fresh object from a fixed key list, which meant any key it did not
+      // know about was dropped on every poll tick — `robotsJobs` and `robotsOutputs` included,
+      // silently, several times a second while an asset prepared. Spreading `current` first is
+      // what keeps them. Setting a mirror key to `undefined` still clears it, because
+      // `normalizeForDiff` drops undefined keys before the comparison and JSON drops them on the
+      // way to storage, so "the asset has no captions any more" behaves as it always did.
+      //
+      // The version is derived, never asserted — see `deriveFieldVersion`.
+      await this.updateField((current) => {
+        if (!current) return current;
+        return {
+          ...current,
+          version: deriveFieldVersion(current),
+          uploadId: current.uploadId || undefined,
+          assetId: current.assetId,
+          playbackId: (publicPlayback && publicPlayback.id) || undefined,
+          signedPlaybackId: (signedPlayback && signedPlayback.id) || undefined,
+          drmPlaybackId: (drmPlayback && drmPlayback.id) || undefined,
+          ready: asset.status === 'ready',
+          ratio: asset.aspect_ratio || undefined,
+          max_stored_resolution: asset.max_stored_resolution || undefined,
+          max_stored_frame_rate: asset.max_stored_frame_rate || undefined,
+          duration: asset.duration || undefined,
+          audioOnly: audioOnly,
+          error: assetError || undefined,
+          created_at: asset.created_at ? Number(asset.created_at) : undefined,
+          captions: captions,
+          audioTracks: audioTracks,
+          static_renditions: asset.static_renditions?.files || undefined,
+          is_live: asset.is_live || undefined,
+          live_stream_id: asset.live_stream_id || undefined,
+          meta: asset.meta || undefined,
+          passthrough: asset.passthrough || undefined,
+          pendingActions: current.pendingActions || undefined,
+        };
+      });
 
       if (drmPlayback && drmPlayback.id) {
         this.setState({ playerPlaybackId: drmPlayback.id });
@@ -954,53 +1312,53 @@ export class App extends React.Component<AppProps, AppState> {
   };
 
   swapPlaybackIDs = async (policy: PolicyType) => {
-    if (!this.state.value) return;
+    await this.updateField((currentValue) => {
+      if (!currentValue) return currentValue;
 
-    const currentValue = this.state.value;
-    const currentPlaybackId =
-      currentValue.playbackId || currentValue.signedPlaybackId || currentValue.drmPlaybackId;
+      const currentPlaybackId =
+        currentValue.playbackId || currentValue.signedPlaybackId || currentValue.drmPlaybackId;
 
-    const updatedPendingActions: PendingActions = {
-      delete: currentValue.pendingActions?.delete
-        ? currentValue.pendingActions.delete.filter((action) => action.type !== 'playback')
-        : [],
-      create: currentValue.pendingActions?.create
-        ? currentValue.pendingActions.create.filter((action) => action.type !== 'playback')
-        : [],
-      update: currentValue.pendingActions?.update ?? [],
-    };
+      const updatedPendingActions: PendingActions = {
+        delete: currentValue.pendingActions?.delete
+          ? currentValue.pendingActions.delete.filter((action) => action.type !== 'playback')
+          : [],
+        create: currentValue.pendingActions?.create
+          ? currentValue.pendingActions.create.filter((action) => action.type !== 'playback')
+          : [],
+        update: currentValue.pendingActions?.update ?? [],
+      };
 
-    // Determine current policy considering pending actions
-    let currentPolicy: PolicyType;
-    if (currentValue.pendingActions?.create) {
-      const playbackCreateAction = currentValue.pendingActions.create.find(
+      // Determine current policy considering pending actions
+      const playbackCreateAction = currentValue.pendingActions?.create?.find(
         (action) => action.type === 'playback'
       );
-      if (playbackCreateAction) {
-        currentPolicy = playbackCreateAction.data?.policy as PolicyType;
-      } else {
-        const isCurrentlyDRM = this.isUsingDRM();
-        const isCurrentlySigned = this.isUsingSigned();
-        currentPolicy = isCurrentlyDRM ? 'drm' : isCurrentlySigned ? 'signed' : 'public';
+      const currentPolicy: PolicyType = playbackCreateAction
+        ? (playbackCreateAction.data?.policy as PolicyType)
+        : currentValue.drmPlaybackId
+        ? 'drm'
+        : currentValue.signedPlaybackId && !currentValue.playbackId
+        ? 'signed'
+        : 'public';
+
+      if (policy === currentPolicy) return currentValue;
+
+      // Only queue a delete when there is something to delete. The Playback tab is now reachable
+      // on an asset whose playback IDs have all been removed, and a delete action with no `id`
+      // makes the publish function issue `DELETE /assets/{id}/playback-ids` with no ID — which
+      // fails, gets re-queued with a bumped retry, and fails again on the next three publishes.
+      if (currentPlaybackId) {
+        updatedPendingActions.delete.push({ type: 'playback', id: currentPlaybackId, retry: 0 });
       }
-    } else {
-      const isCurrentlyDRM = this.isUsingDRM();
-      const isCurrentlySigned = this.isUsingSigned();
-      currentPolicy = isCurrentlyDRM ? 'drm' : isCurrentlySigned ? 'signed' : 'public';
-    }
-
-    if (policy === currentPolicy) return;
-
-    updatedPendingActions.delete.push({ type: 'playback', id: currentPlaybackId, retry: 0 });
-    updatedPendingActions.create.push({
-      type: 'playback',
-      data: {
-        policy: policy,
-        assetId: currentValue.assetId,
-      },
-      retry: 0,
+      updatedPendingActions.create.push({
+        type: 'playback',
+        data: {
+          policy: policy,
+          assetId: currentValue.assetId,
+        },
+        retry: 0,
+      });
+      return updatePendingActions(currentValue, updatedPendingActions);
     });
-    await this.props.sdk.field.setValue(updatePendingActions(currentValue, updatedPendingActions));
   };
 
   getPlayerAspectRatio = () => {
@@ -1079,54 +1437,56 @@ export class App extends React.Component<AppProps, AppState> {
   };
 
   onDeleteTrack = async (trackId: string, type: 'caption' | 'audio') => {
-    const value = this.state.value;
-    if (!value) return;
-    const pending: PendingActions = value.pendingActions || { delete: [], create: [], update: [] };
-    const newDelete: PendingAction[] = [
-      ...pending.delete,
-      { type: type === 'caption' ? 'caption' : 'audio', id: trackId, retry: 0 },
-    ];
-    const newPendingActions: PendingActions = { ...pending, delete: newDelete };
-    await this.props.sdk.field.setValue(updatePendingActions(value, newPendingActions));
+    await this.updateField((value) => {
+      if (!value) return value;
+      const pending: PendingActions = value.pendingActions || {
+        delete: [],
+        create: [],
+        update: [],
+      };
+      const newDelete: PendingAction[] = [
+        ...pending.delete,
+        { type: type === 'caption' ? 'caption' : 'audio', id: trackId, retry: 0 },
+      ];
+      return updatePendingActions(value, { ...pending, delete: newDelete });
+    });
   };
 
   onUndoDeleteTrack = async (trackId: string, type: 'caption' | 'audio') => {
-    const value = this.state.value;
-    if (!value || !value.pendingActions) return;
-    const newDelete = value.pendingActions.delete.filter(
-      (action) =>
-        !(action.type === (type === 'caption' ? 'caption' : 'audio') && action.id === trackId)
-    );
-    const newPendingActions: PendingActions = {
-      ...value.pendingActions,
-      delete: newDelete,
-    };
-    await this.props.sdk.field.setValue(updatePendingActions(value, newPendingActions));
+    await this.updateField((value) => {
+      if (!value || !value.pendingActions) return value;
+      const newDelete = value.pendingActions.delete.filter(
+        (action) =>
+          !(action.type === (type === 'caption' ? 'caption' : 'audio') && action.id === trackId)
+      );
+      return updatePendingActions(value, { ...value.pendingActions, delete: newDelete });
+    });
   };
 
   onDeleteRendition = async (renditionId: string) => {
-    const value = this.state.value;
-    if (!value) return;
-    const pending: PendingActions = value.pendingActions || { delete: [], create: [], update: [] };
-    const newDelete = [
-      ...pending.delete,
-      { type: 'staticRendition', id: renditionId, retry: 0 } as PendingAction,
-    ];
-    const newPendingActions: PendingActions = { ...pending, delete: newDelete };
-    await this.props.sdk.field.setValue(updatePendingActions(value, newPendingActions));
+    await this.updateField((value) => {
+      if (!value) return value;
+      const pending: PendingActions = value.pendingActions || {
+        delete: [],
+        create: [],
+        update: [],
+      };
+      const newDelete = [
+        ...pending.delete,
+        { type: 'staticRendition', id: renditionId, retry: 0 } as PendingAction,
+      ];
+      return updatePendingActions(value, { ...pending, delete: newDelete });
+    });
   };
 
   onUndoDeleteRendition = async (renditionId: string) => {
-    const value = this.state.value;
-    if (!value || !value.pendingActions) return;
-    const newDelete = value.pendingActions.delete.filter(
-      (action) => !(action.type === 'staticRendition' && action.id === renditionId)
-    );
-    const newPendingActions: PendingActions = {
-      ...value.pendingActions,
-      delete: newDelete,
-    };
-    await this.props.sdk.field.setValue(updatePendingActions(value, newPendingActions));
+    await this.updateField((value) => {
+      if (!value || !value.pendingActions) return value;
+      const newDelete = value.pendingActions.delete.filter(
+        (action) => !(action.type === 'staticRendition' && action.id === renditionId)
+      );
+      return updatePendingActions(value, { ...value.pendingActions, delete: newDelete });
+    });
   };
 
   isTrackPendingDelete = (trackId: string, type: 'caption' | 'audio') => {
@@ -1152,44 +1512,52 @@ export class App extends React.Component<AppProps, AppState> {
 
   // Handler to add asset to pending delete
   onDeleteAsset = async () => {
-    const value = this.state.value;
-    if (!value || !value.assetId) return;
-    const pending: PendingActions = value.pendingActions || { delete: [], create: [], update: [] };
-    const newDelete = [...pending.delete, { type: 'asset', id: value.assetId, retry: 0 }];
-    const newPendingActions = { ...pending, delete: newDelete };
-    await this.props.sdk.field.setValue(updatePendingActions(value, newPendingActions));
+    await this.updateField((value) => {
+      if (!value || !value.assetId) return value;
+      const pending: PendingActions = value.pendingActions || {
+        delete: [],
+        create: [],
+        update: [],
+      };
+      const newDelete = [...pending.delete, { type: 'asset', id: value.assetId, retry: 0 }];
+      return updatePendingActions(value, { ...pending, delete: newDelete });
+    });
   };
 
   // Handler to undo asset pending delete
   onUndoDeleteAsset = async () => {
-    const value = this.state.value;
-    if (!value || !value.pendingActions || !value.assetId) return;
-    const newDelete = value.pendingActions.delete.filter(
-      (action) => !(action.type === 'asset' && action.id === value.assetId)
-    );
-    const newPendingActions = { ...value.pendingActions, delete: newDelete };
-    await this.props.sdk.field.setValue(updatePendingActions(value, newPendingActions));
+    await this.updateField((value) => {
+      if (!value || !value.pendingActions || !value.assetId) return value;
+      const newDelete = value.pendingActions.delete.filter(
+        (action) => !(action.type === 'asset' && action.id === value.assetId)
+      );
+      return updatePendingActions(value, { ...value.pendingActions, delete: newDelete });
+    });
   };
 
   onUpdateMetadata = async ({ standardMetadata }: { standardMetadata: { title?: string } }) => {
-    const value = this.state.value;
-    if (!value) return;
-    const currentTitle = value.meta?.title || '';
-    const newTitle = standardMetadata.title || '';
-    const pending: PendingActions = value.pendingActions || { delete: [], create: [], update: [] };
-    let newUpdate: PendingAction[] =
-      pending.update?.filter((action) => action.type !== 'metadata') ?? [];
+    await this.updateField((value) => {
+      if (!value) return value;
+      const currentTitle = value.meta?.title || '';
+      const newTitle = standardMetadata.title || '';
+      const pending: PendingActions = value.pendingActions || {
+        delete: [],
+        create: [],
+        update: [],
+      };
+      let newUpdate: PendingAction[] =
+        pending.update?.filter((action) => action.type !== 'metadata') ?? [];
 
-    if (currentTitle !== newTitle) {
-      newUpdate = [
-        ...newUpdate.map((action) => ({ ...action, retry: action.retry ?? 0 })),
-        { type: 'metadata', data: { title: newTitle }, retry: 0 },
-      ];
-    } else {
-      newUpdate = newUpdate.map((action) => ({ ...action, retry: action.retry ?? 0 }));
-    }
-    const newPendingActions = { ...pending, update: newUpdate };
-    await this.props.sdk.field.setValue(updatePendingActions(value, newPendingActions));
+      if (currentTitle !== newTitle) {
+        newUpdate = [
+          ...newUpdate.map((action) => ({ ...action, retry: action.retry ?? 0 })),
+          { type: 'metadata', data: { title: newTitle }, retry: 0 },
+        ];
+      } else {
+        newUpdate = newUpdate.map((action) => ({ ...action, retry: action.retry ?? 0 }));
+      }
+      return updatePendingActions(value, { ...pending, update: newUpdate });
+    });
   };
 
   render = () => {
@@ -1233,13 +1601,25 @@ export class App extends React.Component<AppProps, AppState> {
       );
     }
 
-    if (
-      this.state.value &&
-      (this.state.value.playbackId ||
-        this.state.value.signedPlaybackId ||
-        this.state.value.drmPlaybackId)
-    ) {
+    // Gated on `assetId`, not on a playback ID.
+    //
+    // `moderate` with `on_flagged.action: delete_playback_ids` — and anyone clicking delete in the
+    // Mux dashboard — removes every playback ID from the asset. The mirror then correctly clears
+    // all three, and this branch used to fall through to the upload area, presenting a field that
+    // still held `assetId`, `captions`, `robotsJobs` and `robotsOutputs` as if it were empty. The
+    // only affordance left was the "URL or Mux Asset ID" form, whose submit replaces the whole
+    // value — so the one visible way out destroyed the Robots record and the caption list.
+    //
+    // An entry with an asset gets the editor for that asset. Whether it can be *played* is a
+    // property of the asset, not of whether this field has anything in it.
+    if (this.state.value && this.state.value.assetId) {
       const { muxDomain } = this.props.sdk.parameters.installation as InstallationParams;
+
+      const hasPlaybackId = !!(
+        this.state.value.playbackId ||
+        this.state.value.signedPlaybackId ||
+        this.state.value.drmPlaybackId
+      );
 
       const showPlayer = this.isPlayerReady();
 
@@ -1327,6 +1707,31 @@ export class App extends React.Component<AppProps, AppState> {
               </Box>
             )}
 
+            {/* Where the player would go. An asset with no playback IDs is not an error and not
+                an empty field — it is a video that currently cannot be played, and saying so is
+                the whole point: everything else on this screen still works. */}
+            {!hasPlaybackId && (
+              <Box marginBottom="spacingM">
+                <Note variant="warning" data-testid="noplaybackids">
+                  <Flex justifyContent="space-between" alignItems="center" gap="spacingM">
+                    <span>
+                      This video has no playback IDs, so it cannot be played or embedded. The asset
+                      and everything recorded against it are still here. Playback IDs can be removed
+                      in the Mux dashboard, or by a Robots moderation directive configured to delete
+                      them. Add one in Mux and resync, or use the Playback tab to request a new one.
+                    </span>
+                    <Button
+                      variant="secondary"
+                      size="small"
+                      onClick={() => this.resync()}
+                      className="resync-no-playback">
+                      Resync
+                    </Button>
+                  </Flex>
+                </Note>
+              </Box>
+            )}
+
             {showPlayer && (
               <section className="player" style={this.getPlayerAspectRatio()}>
                 <MuxPlayer
@@ -1375,7 +1780,10 @@ export class App extends React.Component<AppProps, AppState> {
               </Box>
             )}
 
-            {!showPlayer && !this.isUsingDRM() && (
+            {/* `hasPlaybackId` keeps "waiting for the asset to become playable" out of the one
+                case where it is never going to: there is nothing to wait for without a playback
+                ID, and the note above says so instead. */}
+            {!showPlayer && hasPlaybackId && !this.isUsingDRM() && (
               <section className="uploader_area center aspectratio" data-testid="waitingtoplay">
                 <span>
                   <Spinner size="small" /> Waiting for asset to be playable
@@ -1390,10 +1798,16 @@ export class App extends React.Component<AppProps, AppState> {
               </section>
             )}
 
-            <Tabs defaultTab="captions">
+            {/* `currentTab` is controlled rather than left to `defaultTab` so the Robots panel
+                knows when it is being looked at: every panel renders, and Robots must not cost an
+                app-action round trip on entries where nobody opens it. */}
+            <Tabs
+              currentTab={this.state.selectedTab}
+              onTabChange={(tab) => this.setState({ selectedTab: tab })}>
               <Tabs.List variant="horizontal-divider" className="tabs-scroll">
                 <Tabs.Tab panelId="captions">Captions</Tabs.Tab>
                 <Tabs.Tab panelId="audio">Audio Tracks</Tabs.Tab>
+                <Tabs.Tab panelId="robots">Robots</Tabs.Tab>
                 <Tabs.Tab panelId="metadata">Metadata</Tabs.Tab>
                 <Tabs.Tab panelId="mp4renditions">MP4 Renditions</Tabs.Tab>
                 <Tabs.Tab panelId="playback">Playback</Tabs.Tab>
@@ -1448,6 +1862,43 @@ export class App extends React.Component<AppProps, AppState> {
                     token={this.state.playbackToken}
                     isSigned={this.isUsingSigned()}
                   />
+                </Tabs.Panel>
+
+                {/* `forceMount` because this panel holds state that must outlive a tab switch.
+                    f36's `Tabs.Panel` forwards it to Radix, which otherwise *unmounts* an
+                    inactive panel rather than hiding it — and the guard that stops a job being
+                    created twice lives in this component's state. Without this, clicking away to
+                    Captions and back re-enables Run on a create whose outcome is still unknown,
+                    which is two clicks away from paying for the same job twice. Costs nothing in
+                    requests: `isActive` already gates every fetch and the poll loop.
+
+                    `hidden` has to be ours. Radix reads `forceMount` as "mounted *and* rendered"
+                    — it sets `hidden={!present}` and `forceMount` is what makes `present` true —
+                    so the panel would otherwise draw its contents underneath every other tab.
+                    That is for animation libraries that manage visibility themselves; here the
+                    only thing we wanted from it was to keep the component alive. */}
+                <Tabs.Panel id="robots" forceMount>
+                  {/* The `hidden` lives on our own element rather than on `Tabs.Panel`, which
+                      forwards unknown props to its div at runtime but does not declare them. */}
+                  <div hidden={this.state.selectedTab !== 'robots'} data-test-id="robots_tab_panel">
+                    {/* Fenced off: an unhandled error here would otherwise unmount the whole field
+                      editor, and with `forceMount` this panel now renders on every entry with a
+                      video — including installs that never enable Robots. */}
+                    <RobotsErrorBoundary>
+                      <RobotsPanel
+                        sdk={this.props.sdk}
+                        muxApi={this.muxApi}
+                        value={this.state.value}
+                        isActive={this.state.selectedTab === 'robots'}
+                        updateField={this.updateField}
+                        resync={this.resync}
+                        defaultDirectiveIds={
+                          (this.props.sdk.parameters.installation as InstallationParams)
+                            .muxDefaultDirectiveIds ?? []
+                        }
+                      />
+                    </RobotsErrorBoundary>
+                  </div>
                 </Tabs.Panel>
 
                 <Tabs.Panel id="metadata">
