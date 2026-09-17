@@ -12,7 +12,8 @@ import { RobotsOutputs } from './robotsTypes';
  * The asymmetry that makes this safe: `MetadataConfiguration` only *reads*, so guessing wrong
  * costs nothing. Applying output *writes*, so guessing wrong would overwrite an editor's copy.
  * Hence the convention only suggests; nothing is written without an explicit confirm against a
- * side-by-side preview, and a row is unchecked by default when it would replace existing content.
+ * side-by-side preview, and a row starts with no target at all when the suggestion would replace
+ * existing content — see `defaultTargetFieldId`.
  *
  * The alternative — per-content-type instance parameters — was ruled out: instance parameter
  * *definitions* live in the App Definition, which Contentful owns and which is not in this repo,
@@ -55,8 +56,13 @@ const CONVENTION: Record<RobotsOutputKey, RegExp[]> = {
   tags: [/^tags$/i, /^keywords$/i, /^topics$/i, /^categories$/i],
 };
 
+/**
+ * A Rich Text field's value is a *document*, not a string, so it is only writable because
+ * `valueForField` converts on the way in. Widening this predicate without that conversion would
+ * put a bare string where the entry editor expects a node tree and break the field for the editor.
+ */
 function canHoldText(field: EntryFieldOption): boolean {
-  return field.type === 'Symbol' || field.type === 'Text';
+  return field.type === 'Symbol' || field.type === 'Text' || field.type === 'RichText';
 }
 
 function canHoldStringList(field: EntryFieldOption): boolean {
@@ -65,6 +71,100 @@ function canHoldStringList(field: EntryFieldOption): boolean {
 
 function isCompatible(key: RobotsOutputKey, field: EntryFieldOption): boolean {
   return key === 'tags' ? canHoldStringList(field) : canHoldText(field);
+}
+
+/**
+ * The shape a Contentful Rich Text field holds.
+ *
+ * Declared here rather than imported from `@contentful/rich-text-types`: that package is only
+ * present as a transitive dependency of `contentful-management`, so importing it would tie this
+ * file to someone else's dependency tree for three interfaces. The shape below is copied from that
+ * package's `Document`/`Block`/`Text` types (v16.8.5) and matches its exported `EMPTY_DOCUMENT`
+ * exactly, `data` and `marks` included — every node carries `data`, and a text node carries
+ * `marks`, both required even when empty.
+ */
+interface RichTextTextNode {
+  nodeType: 'text';
+  value: string;
+  marks: Array<{ type: string }>;
+  data: Record<string, unknown>;
+}
+
+interface RichTextParagraphNode {
+  nodeType: 'paragraph';
+  data: Record<string, unknown>;
+  content: RichTextTextNode[];
+}
+
+export interface RichTextDocument {
+  nodeType: 'document';
+  data: Record<string, unknown>;
+  content: RichTextParagraphNode[];
+}
+
+/**
+ * The smallest valid document that says `text`: one paragraph, one unmarked text node.
+ *
+ * Deliberately not clever. A generated description is prose, and splitting it into several
+ * paragraphs or inferring marks would be guessing at structure the model never expressed — while a
+ * document that does not validate is worse than one that is plain, because Contentful's rich text
+ * editor refuses to render a malformed node tree at all.
+ */
+export function richTextDocument(text: string): RichTextDocument {
+  return {
+    nodeType: 'document',
+    data: {},
+    content: [
+      {
+        nodeType: 'paragraph',
+        data: {},
+        content: [{ nodeType: 'text', value: text, marks: [], data: {} }],
+      },
+    ],
+  };
+}
+
+interface UnknownNode {
+  nodeType?: unknown;
+  value?: unknown;
+  content?: unknown;
+}
+
+function isNode(value: unknown): value is UnknownNode {
+  return typeof value === 'object' && value !== null && 'nodeType' in value;
+}
+
+function nodeText(node: UnknownNode): string {
+  if (node.nodeType === 'text') return typeof node.value === 'string' ? node.value : '';
+  if (!Array.isArray(node.content)) return '';
+  const parts = node.content.filter(isNode).map(nodeText);
+  // Only the top level gets separators: inside a paragraph, consecutive text nodes are one
+  // sentence split by marks, and joining those with a space would invent whitespace.
+  return node.nodeType === 'document'
+    ? parts.filter((part) => part !== '').join(' ')
+    : parts.join('');
+}
+
+/**
+ * The readable text inside a Rich Text value, or `undefined` when this is not one.
+ *
+ * `undefined` is load-bearing: it is how the callers below tell "a document that happens to be
+ * empty" apart from "not a document at all", which decide different things.
+ */
+export function richTextToPlainText(value: unknown): string | undefined {
+  if (!isNode(value) || value.nodeType !== 'document') return undefined;
+  return nodeText(value);
+}
+
+/**
+ * The generated value in the shape the chosen field expects.
+ *
+ * Every other supported type stores what Robots produced verbatim; Rich Text is the one that has
+ * to be wrapped, and it is wrapped here — at the write — rather than on the candidate, because
+ * which conversion applies is not known until the editor picks a target.
+ */
+export function valueForField(value: string | string[], fieldType: string): unknown {
+  return fieldType === 'RichText' && typeof value === 'string' ? richTextDocument(value) : value;
 }
 
 /**
@@ -153,6 +253,10 @@ export function formatFieldValue(value: unknown): string {
   if (value === undefined || value === null || value === '') return '';
   if (Array.isArray(value)) return value.join(', ');
   if (typeof value === 'string') return value;
+  // A Rich Text field would otherwise preview as a wall of JSON, which tells the editor nothing
+  // about what they are being asked to replace.
+  const richText = richTextToPlainText(value);
+  if (richText !== undefined) return richText;
   return JSON.stringify(value);
 }
 
@@ -160,7 +264,34 @@ export function formatFieldValue(value: unknown): string {
 export function wouldOverwrite(current: unknown): boolean {
   if (current === undefined || current === null || current === '') return false;
   if (Array.isArray(current)) return current.length > 0;
+  // A Rich Text field the editor merely clicked into holds an empty document, not `undefined`.
+  // Treating that as content would refuse to pre-fill a field that is visibly blank.
+  const richText = richTextToPlainText(current);
+  if (richText !== undefined) return richText.trim() !== '';
   return true;
+}
+
+/** The field this output would go to if nothing stood in the way: convention first, then anything compatible. */
+export function preferredTargetFieldId(candidate: RobotsOutputCandidate): string {
+  return candidate.suggestedFieldId ?? candidate.compatibleFieldIds[0] ?? '';
+}
+
+/**
+ * The target a row opens on, or `''` for none.
+ *
+ * The target dropdown is the only control on a row, so pre-filling it *is* consenting to the
+ * write. That makes this the place where ADR-0004's rule lives: a suggestion that would replace
+ * the editor's own copy is not pre-filled, and choosing it has to be deliberate. The dialog still
+ * names the field it declined to fill, so the row is not silently blank.
+ */
+export function defaultTargetFieldId(
+  sdk: FieldExtensionSDK,
+  candidate: RobotsOutputCandidate,
+  locale: string
+): string {
+  const fieldId = preferredTargetFieldId(candidate);
+  if (!fieldId) return '';
+  return wouldOverwrite(currentFieldValue(sdk, fieldId, locale)) ? '' : fieldId;
 }
 
 export interface ApplySelection {
@@ -194,7 +325,7 @@ export async function applyOutputsToEntry(
     }
     const target = field.locales?.includes(locale) ? locale : field.locales?.[0];
     try {
-      await field.setValue(candidate.value, target);
+      await field.setValue(valueForField(candidate.value, field.type), target);
       result.applied.push({ fieldId, key: candidate.key });
     } catch (error) {
       result.failed.push({

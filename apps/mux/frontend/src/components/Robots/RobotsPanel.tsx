@@ -9,6 +9,7 @@ import {
   Skeleton,
   Subheading,
   Text,
+  Tooltip,
 } from '@contentful/f36-components';
 import { CycleIcon } from '@contentful/f36-icons';
 import { MuxApiError, MuxApiService } from '../../util/muxApi';
@@ -618,6 +619,12 @@ const RobotsPanel: FC<RobotsPanelProps> = ({
       ? 'A directive run started but Mux never confirmed it. Refresh to check whether it is already going — starting another could bill you several times over.'
       : undefined);
 
+  // Not a spend guard like the two above — there is simply nothing to apply yet. It reads as a
+  // reason rather than a boolean because it is what the tooltip says.
+  const applyDisabledReason = value?.robotsOutputs?.summarize
+    ? undefined
+    : 'Run a Summarize workflow to apply its title, description and tags to this entry’s own fields.';
+
   const availableDirectives = directives.length
     ? directives
     : defaultDirectiveIds.map((id) => ({ id, name: id }) as RobotsDirective);
@@ -637,9 +644,19 @@ const RobotsPanel: FC<RobotsPanelProps> = ({
             onClick={() => setIsRunModalShown(true)}>
             Run a workflow
           </Button>
-          {!!value?.robotsOutputs?.summarize && (
+          {applyDisabledReason ? (
+            // Rendered disabled rather than hidden: a feature that only appears once you have
+            // already done the thing that enables it is a feature nobody discovers. The tooltip
+            // says what it would do and what has to happen first, which is the same
+            // disabled-with-a-reason pattern `TrackList` and `Mp4RenditionsList` use.
+            <Tooltip content={applyDisabledReason} placement="bottom">
+              <Button variant="secondary" isDisabled>
+                Apply summary
+              </Button>
+            </Tooltip>
+          ) : (
             <Button variant="secondary" onClick={() => setIsApplyModalShown(true)}>
-              Apply to entry
+              Apply summary
             </Button>
           )}
         </Flex>

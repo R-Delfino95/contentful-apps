@@ -5,8 +5,12 @@ import {
   applyOutputsToEntry,
   buildOutputCandidates,
   currentFieldValue,
+  defaultTargetFieldId,
   entryFieldOptions,
   formatFieldValue,
+  preferredTargetFieldId,
+  richTextDocument,
+  valueForField,
   wouldOverwrite,
 } from './robotsEntryMapping';
 import { RobotsOutputs } from './robotsTypes';
@@ -115,6 +119,37 @@ describe('buildOutputCandidates', () => {
     expect(tagsCandidate?.compatibleFieldIds).toEqual(['tags']);
   });
 
+  it('offers rich text fields for text outputs, but never for tags', () => {
+    const sdk = buildSdk([
+      { id: 'body', type: 'RichText' },
+      { id: 'tagsRich', type: 'RichText' },
+    ]);
+
+    const candidates = buildOutputCandidates(sdk, summary);
+
+    expect(
+      candidates.find((candidate) => candidate.key === 'description')?.compatibleFieldIds
+    ).toEqual(['body', 'tagsRich']);
+    expect(candidates.find((candidate) => candidate.key === 'title')?.compatibleFieldIds).toEqual([
+      'body',
+      'tagsRich',
+    ]);
+    // A list of strings has no home in a document, so this one stays refused.
+    expect(candidates.find((candidate) => candidate.key === 'tags')?.compatibleFieldIds).toEqual(
+      []
+    );
+  });
+
+  it('suggests a rich text field by the same convention as a plain one', () => {
+    const sdk = buildSdk([{ id: 'description', type: 'RichText' }]);
+
+    const description = buildOutputCandidates(sdk, summary).find(
+      (candidate) => candidate.key === 'description'
+    );
+
+    expect(description?.suggestedFieldId).toBe('description');
+  });
+
   it('reports no suggestion rather than guessing when nothing matches the convention', () => {
     const sdk = buildSdk([{ id: 'someOtherText', type: 'Symbol' }]);
 
@@ -158,6 +193,99 @@ describe('wouldOverwrite', () => {
     expect(wouldOverwrite(['a'])).toBe(true);
     expect(wouldOverwrite(0)).toBe(true);
   });
+
+  // A Rich Text field the editor merely clicked into holds a document, not `undefined`, so an
+  // object test alone would call every such field occupied and never pre-fill one.
+  it('sees through a rich text document to whether it actually says anything', () => {
+    expect(wouldOverwrite(richTextDocument(''))).toBe(false);
+    expect(wouldOverwrite(richTextDocument('   '))).toBe(false);
+    expect(wouldOverwrite(richTextDocument('Existing copy'))).toBe(true);
+  });
+});
+
+describe('preferredTargetFieldId', () => {
+  it('prefers the convention, and falls back to anything compatible', () => {
+    expect(
+      preferredTargetFieldId({
+        key: 'title',
+        label: 'Title',
+        value: 'x',
+        compatibleFieldIds: ['a', 'b'],
+        suggestedFieldId: 'b',
+      })
+    ).toBe('b');
+
+    expect(
+      preferredTargetFieldId({
+        key: 'title',
+        label: 'Title',
+        value: 'x',
+        compatibleFieldIds: ['a', 'b'],
+      })
+    ).toBe('a');
+
+    expect(
+      preferredTargetFieldId({ key: 'title', label: 'Title', value: 'x', compatibleFieldIds: [] })
+    ).toBe('');
+  });
+});
+
+describe('defaultTargetFieldId', () => {
+  // The target dropdown is the only control on a row now, so pre-filling it is consent to write.
+  // ADR-0004's "do not overwrite by default" rule therefore lives here rather than on a checkbox.
+  it('pre-fills a field that is empty', () => {
+    const sdk = buildSdk([{ id: 'title', type: 'Symbol' }]);
+    const candidate = buildOutputCandidates(sdk, summary)[0];
+    expect(defaultTargetFieldId(sdk, candidate, 'en-US')).toBe('title');
+  });
+
+  it('refuses to pre-fill a field that already has content', () => {
+    const sdk = buildSdk([{ id: 'title', type: 'Symbol', value: 'The editor’s own title' }]);
+    const candidate = buildOutputCandidates(sdk, summary)[0];
+    expect(defaultTargetFieldId(sdk, candidate, 'en-US')).toBe('');
+  });
+
+  it('has nothing to pre-fill when no field is compatible', () => {
+    const sdk = buildSdk([{ id: 'publishedAt', type: 'Date' }]);
+    const candidate = buildOutputCandidates(sdk, summary)[0];
+    expect(defaultTargetFieldId(sdk, candidate, 'en-US')).toBe('');
+  });
+});
+
+describe('richTextDocument', () => {
+  /**
+   * Pinned against `@contentful/rich-text-types@16.8.5` — its `EMPTY_DOCUMENT` with a value in the
+   * text node. `data` on every node and `marks` on the text node are required even when empty, and
+   * a document missing either is one Contentful's rich text editor will not render.
+   */
+  it('builds the exact document shape Contentful validates', () => {
+    expect(richTextDocument('A generated description')).toEqual({
+      nodeType: 'document',
+      data: {},
+      content: [
+        {
+          nodeType: 'paragraph',
+          data: {},
+          content: [
+            { nodeType: 'text', value: 'A generated description', marks: [], data: {} },
+          ],
+        },
+      ],
+    });
+  });
+});
+
+describe('valueForField', () => {
+  it('wraps a string for a rich text field and leaves every other type alone', () => {
+    expect(valueForField('Some text', 'RichText')).toEqual(richTextDocument('Some text'));
+    expect(valueForField('Some text', 'Symbol')).toBe('Some text');
+    expect(valueForField('Some text', 'Text')).toBe('Some text');
+    expect(valueForField(['a', 'b'], 'Array')).toEqual(['a', 'b']);
+  });
+
+  it('never wraps a list, which no rich text field could hold anyway', () => {
+    expect(valueForField(['a', 'b'], 'RichText')).toEqual(['a', 'b']);
+  });
 });
 
 describe('currentFieldValue', () => {
@@ -179,6 +307,84 @@ describe('formatFieldValue', () => {
     expect(formatFieldValue(['a', 'b'])).toBe('a, b');
     expect(formatFieldValue('plain')).toBe('plain');
     expect(formatFieldValue(undefined)).toBe('');
+  });
+
+  it('reads a rich text document as its text, not as JSON', () => {
+    expect(formatFieldValue(richTextDocument('What the field says'))).toBe('What the field says');
+  });
+
+  it('keeps paragraphs apart and marked-up runs together', () => {
+    const document = {
+      nodeType: 'document',
+      data: {},
+      content: [
+        {
+          nodeType: 'paragraph',
+          data: {},
+          content: [
+            { nodeType: 'text', value: 'Plain and ', marks: [], data: {} },
+            { nodeType: 'text', value: 'bold', marks: [{ type: 'bold' }], data: {} },
+          ],
+        },
+        {
+          nodeType: 'paragraph',
+          data: {},
+          content: [{ nodeType: 'text', value: 'Second paragraph', marks: [], data: {} }],
+        },
+      ],
+    };
+
+    expect(formatFieldValue(document)).toBe('Plain and bold Second paragraph');
+  });
+
+  it('still falls back to JSON for an object that is not a document', () => {
+    expect(formatFieldValue({ lat: 1, lon: 2 })).toBe('{"lat":1,"lon":2}');
+  });
+
+  /**
+   * "Has a `nodeType`" is not the same question as "is a rich text value". Only a `document` is
+   * one — a loose `paragraph` is a fragment of something, and flattening it to its text would
+   * claim to have read a field that nobody stores that way.
+   */
+  it('does not read a loose node as a rich text value', () => {
+    const paragraph = {
+      nodeType: 'paragraph',
+      data: {},
+      content: [{ nodeType: 'text', value: 'Loose', marks: [], data: {} }],
+    };
+
+    expect(formatFieldValue(paragraph)).toBe(JSON.stringify(paragraph));
+    expect(wouldOverwrite({ nodeType: 'paragraph', data: {}, content: [] })).toBe(true);
+  });
+
+  /**
+   * A field value arrives from the SDK as `unknown`, so every narrowing in the walk is load-bearing
+   * — a document that is a document in name only must preview as nothing rather than throw on the
+   * way to rendering a table cell.
+   */
+  it('survives a document whose nodes are not what the schema promises', () => {
+    expect(formatFieldValue({ nodeType: 'document', data: {} })).toBe('');
+    expect(
+      formatFieldValue({
+        nodeType: 'document',
+        data: {},
+        content: [
+          { nodeType: 'paragraph', data: {}, content: [] },
+          {
+            nodeType: 'paragraph',
+            data: {},
+            content: [{ nodeType: 'text', value: 42, marks: [], data: {} }],
+          },
+          'not a node',
+          {
+            nodeType: 'paragraph',
+            data: {},
+            content: [{ nodeType: 'text', value: 'The only real text', marks: [], data: {} }],
+          },
+        ],
+      })
+      // No leading or doubled spaces from the blank blocks either.
+    ).toBe('The only real text');
   });
 });
 
@@ -230,6 +436,35 @@ describe('applyOutputsToEntry', () => {
 
     expect(result.applied).toEqual([{ fieldId: 'tags', key: 'tags' }]);
     expect(result.failed).toEqual([{ fieldId: 'title', key: 'title', message: 'Too long' }]);
+  });
+
+  /**
+   * The bug this covers: a Rich Text field holds a node tree, and `setValue('some string')` on one
+   * corrupts it — the entry editor cannot render a string where it expects a document. The check
+   * that used to refuse rich text was therefore right until the conversion existed.
+   */
+  it('writes a document to a rich text field, not the bare string', async () => {
+    const setValue = vi.fn(async () => undefined);
+    const sdk = buildSdk([{ id: 'description', type: 'RichText', setValue }]);
+    const candidate = buildOutputCandidates(sdk, summary).find(
+      (entry) => entry.key === 'description'
+    ) as RobotsOutputCandidate;
+
+    await applyOutputsToEntry(sdk, [{ candidate, fieldId: 'description' }], 'en-US');
+
+    expect(setValue).toHaveBeenCalledWith(richTextDocument('Generated description'), 'en-US');
+  });
+
+  it('still writes a plain string to a plain text field', async () => {
+    const setValue = vi.fn(async () => undefined);
+    const sdk = buildSdk([{ id: 'description', type: 'Text', setValue }]);
+    const candidate = buildOutputCandidates(sdk, summary).find(
+      (entry) => entry.key === 'description'
+    ) as RobotsOutputCandidate;
+
+    await applyOutputsToEntry(sdk, [{ candidate, fieldId: 'description' }], 'en-US');
+
+    expect(setValue).toHaveBeenCalledWith('Generated description', 'en-US');
   });
 
   it('reports a field that disappeared instead of throwing', async () => {

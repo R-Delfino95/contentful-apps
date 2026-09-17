@@ -177,17 +177,40 @@ describe('RobotsPanel spend guards', () => {
     expect(screen.getByRole('button', { name: 'Run a workflow' })).toBeDisabled();
   });
 
-  it('offers apply-to-entry only once a summary has been stored', async () => {
-    const { unmount } = renderPanel({ muxApi: apiThatReturns([]) });
+  /**
+   * The button used to be hidden until a summary existed, which made the whole feature invisible
+   * to anyone who had not already run the workflow that enables it. It is now always rendered,
+   * and disabled-with-a-reason is what carries the "not yet" — so what these two assert is
+   * discoverability, not merely the enabled/disabled flip.
+   */
+  it('shows the apply button before there is anything to apply, disabled', async () => {
+    renderPanel({ muxApi: apiThatReturns([]) });
     await waitFor(() => expect(screen.getByText('Run a workflow')).toBeInTheDocument());
-    expect(screen.queryByText('Apply to entry')).not.toBeInTheDocument();
-    unmount();
 
+    expect(screen.getByRole('button', { name: 'Apply summary' })).toBeDisabled();
+  });
+
+  it('says on hover what the apply button would do and what has to happen first', async () => {
+    renderPanel({ muxApi: apiThatReturns([]) });
+    await waitFor(() => expect(screen.getByText('Run a workflow')).toBeInTheDocument());
+
+    fireEvent.mouseOver(screen.getByRole('button', { name: 'Apply summary' }));
+
+    await waitFor(() =>
+      expect(screen.getByRole('tooltip')).toHaveTextContent(
+        /Run a Summarize workflow to apply its title, description and tags/
+      )
+    );
+  });
+
+  it('enables apply once a summary has been stored', async () => {
     renderPanel({
       muxApi: apiThatReturns([]),
       value: value({ robotsOutputs: { summarize: { jobId: 'rjob_1', title: 'A title' } } }),
     });
-    await waitFor(() => expect(screen.getByText('Apply to entry')).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Apply summary' })).toBeEnabled()
+    );
   });
 });
 
