@@ -11,9 +11,8 @@ import {
   Paragraph,
   Select,
   Text,
-  TextLink,
 } from '@contentful/f36-components';
-import { ExternalLinkIcon } from '@contentful/f36-icons';
+import ExternalLink from '../ExternalLink';
 import {
   ROBOTS_CATALOG,
   ROBOTS_CATALOG_BY_KEY,
@@ -125,14 +124,9 @@ const RobotsRunModal: FC<RobotsRunModalProps> = ({
                 </Paragraph>
                 <Paragraph>
                   Robots is billed per AI unit. The first 100,000 units each month are free —{' '}
-                  <TextLink
-                    href={ROBOTS_PRICING_URL}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    icon={<ExternalLinkIcon />}
-                    alignIcon="end">
+                  <ExternalLink href={ROBOTS_PRICING_URL}>
                     see pricing
-                  </TextLink>
+                  </ExternalLink>
                   .
                 </Paragraph>
                 {definition.producesTrack && (

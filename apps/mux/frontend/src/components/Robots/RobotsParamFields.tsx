@@ -586,7 +586,7 @@ const TaxonomyInput: FC<{
  * `never_translate`'s only character rule names `<`, `>`, invisible characters and anything
  * Unicode normalisation alters. Interior spaces are legal everywhere they are used.
  */
-export const splitStringList = (text: string): string[] =>
+const splitStringList = (text: string): string[] =>
   text
     .split('\n')
     .map((line) => line.trim())

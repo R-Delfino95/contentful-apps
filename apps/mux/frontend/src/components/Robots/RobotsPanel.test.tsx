@@ -1847,3 +1847,304 @@ describe('RobotsPanel — opening a job the moment it finishes', () => {
     }
   });
 });
+
+/**
+ * Concurrency between the two poll loops, the create path and the publish gate.
+ *
+ * Each of these fails if its fix is reverted; none of them asserts anything about how the fix is
+ * implemented, only that the loop keeps running and no read is dropped or applied out of order.
+ */
+describe('RobotsPanel concurrency', () => {
+  beforeEach(() => {
+    resetRobotsCapabilityCache();
+    vi.clearAllMocks();
+  });
+
+  const runningJob = (id = 'rjob_live') => ({
+    id,
+    workflow: 'summarize',
+    status: 'processing',
+    created_at: Math.floor(Date.now() / 1000),
+  });
+
+  it('keeps polling while the parent re-renders', async () => {
+    const muxApi = apiThatReturns([runningJob()]);
+    vi.useFakeTimers();
+    try {
+      const props: any = {
+        sdk,
+        muxApi,
+        value: value(),
+        isActive: true,
+        updateField: vi.fn(async () => undefined),
+        resync: vi.fn(async () => undefined),
+      };
+      // A fresh array each time, exactly as `installation.muxDefaultDirectiveIds ?? []` yields on
+      // an install with no directives configured.
+      const { rerender } = render(<RobotsPanel {...props} defaultDirectiveIds={[]} />);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(50);
+      });
+      const afterFirstLoad = muxApi.listRobotsJobs.mock.calls.length;
+
+      // The asset poll re-renders the field editor every 500 ms while an asset prepares. If that
+      // re-arms this timer, it never fires.
+      for (let tick = 0; tick < 24; tick += 1) {
+        rerender(<RobotsPanel {...props} defaultDirectiveIds={[]} />);
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(500);
+        });
+      }
+
+      expect(muxApi.listRobotsJobs.mock.calls.length).toBeGreaterThan(afterFirstLoad);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps a just-created job on screen when the list has not caught up', async () => {
+    const created = runningJob('rjob_new');
+    const muxApi = {
+      // The list genuinely does not have it yet — `POST` answers before `GET` lists it.
+      listRobotsJobs: vi.fn(async () => ({ data: [] })),
+      getRobotsJob: vi.fn(async () => ({ data: created })),
+      createRobotsJob: vi.fn(async () => ({ data: created })),
+      listRobotsDirectives: vi.fn(async () => ({ data: [] })),
+      listRobotsDirectiveRuns: vi.fn(async () => ({ data: [] })),
+    };
+
+    vi.useFakeTimers();
+    try {
+      renderPanel({ muxApi });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(50);
+      });
+
+      fireEvent.click(screen.getByText('Run a workflow'));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10);
+      });
+      fireEvent.click(screen.getByText('Continue'));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10);
+      });
+      fireEvent.click(screen.getByText('Run Summarize'));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(50);
+      });
+
+      const callsAfterCreate = muxApi.listRobotsJobs.mock.calls.length;
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(ROBOTS_POLL_INTERVAL_MS + 100);
+      });
+
+      // The row is what the poll loop arms on. Losing it to the refresh that runs right after the
+      // create leaves a billable job running with nothing watching it.
+      expect(screen.getByTestId('robots_job_table').textContent).toContain('Summarize');
+      expect(muxApi.listRobotsJobs.mock.calls.length).toBeGreaterThan(callsAfterCreate);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('serves a Refresh asked for while a poll tick was already running', async () => {
+    let releaseList: (value: unknown) => void = () => undefined;
+    const listCalls: number[] = [];
+    const muxApi = {
+      listRobotsJobs: vi.fn(() => {
+        listCalls.push(Date.now());
+        // `resolveRobotsCapability` probes with this same call, so the first two have to settle
+        // before the tab renders at all; only a later poll tick blocks.
+        if (listCalls.length <= 2) return Promise.resolve({ data: [runningJob()] });
+        return new Promise((resolve) => {
+          releaseList = resolve;
+        });
+      }),
+      getRobotsJob: vi.fn(async () => ({ data: runningJob() })),
+      listRobotsDirectives: vi.fn(async () => ({ data: [] })),
+      listRobotsDirectiveRuns: vi.fn(async () => ({ data: [] })),
+    };
+
+    vi.useFakeTimers();
+    try {
+      renderPanel({ muxApi });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(50);
+      });
+
+      // A poll tick starts and hangs.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(ROBOTS_POLL_INTERVAL_MS + 100);
+      });
+      expect(muxApi.listRobotsJobs).toHaveBeenCalledTimes(3);
+
+      // The editor presses Refresh while that tick is still in flight. Dropping it silently is
+      // the bug: no spinner, no data, nothing.
+      fireEvent.click(screen.getByText('Refresh'));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10);
+      });
+
+      await act(async () => {
+        releaseList({ data: [runningJob()] });
+        await vi.advanceTimersByTimeAsync(50);
+      });
+
+      expect(muxApi.listRobotsJobs.mock.calls.length).toBeGreaterThanOrEqual(4);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('reads the runs for one directive one pass at a time', async () => {
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const muxApi = {
+      listRobotsJobs: vi.fn(async () => ({ data: [runningJob()] })),
+      getRobotsJob: vi.fn(async () => ({ data: runningJob() })),
+      listRobotsDirectives: vi.fn(async () => ({ data: [] })),
+      listRobotsDirectiveRuns: vi.fn(async () => {
+        inFlight += 1;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        inFlight -= 1;
+        return { data: [] };
+      }),
+    };
+
+    vi.useFakeTimers();
+    try {
+      renderPanel({ muxApi, defaultDirectiveIds: ['dir_1'] });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(50);
+      });
+
+      // Refresh reads both lists, and so does the poll tick. Overlapping run reads resolve out of
+      // order, and the loser puts back runs the newer pass had moved on from.
+      fireEvent.click(screen.getByText('Refresh'));
+      fireEvent.click(screen.getByText('Refresh'));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(ROBOTS_POLL_INTERVAL_MS + 400);
+      });
+
+      expect(maxInFlight).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('applies the newest read when a parked write is released later', async () => {
+    const mutators: Array<(current: any) => any> = [];
+    // Stands in for the publish gate: the mutator is held, not applied.
+    const updateField = vi.fn(async (mutate: (current: any) => any) => {
+      mutators.push(mutate);
+    });
+
+    const job = { id: 'rjob_p', workflow: 'summarize', created_at: Math.floor(Date.now() / 1000) };
+    let status = 'processing';
+    const muxApi = {
+      listRobotsJobs: vi.fn(async () => ({ data: [{ ...job, status }] })),
+      getRobotsJob: vi.fn(async () => ({ data: { ...job, status, passthrough: ourPassthrough() } })),
+      listRobotsDirectives: vi.fn(async () => ({ data: [] })),
+      listRobotsDirectiveRuns: vi.fn(async () => ({ data: [] })),
+    };
+
+    vi.useFakeTimers();
+    try {
+      renderPanel({ muxApi, updateField });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(50);
+      });
+      expect(mutators.length).toBeGreaterThan(0);
+
+      // The job finishes while the gate is shut.
+      status = 'completed';
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(ROBOTS_POLL_INTERVAL_MS + 100);
+      });
+
+      // The gate opens and the *oldest* parked mutator is re-applied first. It must not write the
+      // `processing` it was queued with over the `completed` that has since been read.
+      const applied = mutators[0](value({ robotsJobs: [{ ...job, status: 'completed' }] } as any));
+      expect(applied.robotsJobs.find((record: any) => record.id === 'rjob_p').status).toBe(
+        'completed'
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+/**
+ * Picking a running job back up on an entry that is merely opened.
+ *
+ * `isActive` keeps Robots free for editors who never open the tab, but an entry reopened while a
+ * job it started is still running has to resume on its own — otherwise a publish re-publishes the
+ * stale `processing` record. See ADR-0013.
+ */
+describe('RobotsPanel — resuming a job without opening the tab', () => {
+  beforeEach(() => {
+    resetRobotsCapabilityCache();
+    vi.clearAllMocks();
+  });
+
+  const nowSeconds = () => Math.floor(Date.now() / 1000);
+
+  const recordedJob = (status: string, createdAt = nowSeconds()) => ({
+    id: 'rjob_recorded',
+    workflow: 'summarize',
+    status,
+    created_at: createdAt,
+  });
+
+  it('loads and polls for an entry whose record says a job is still running', async () => {
+    const muxApi = apiThatReturns([recordedJob('processing')]);
+
+    vi.useFakeTimers();
+    try {
+      renderPanel({
+        muxApi,
+        isActive: false,
+        value: value({ robotsJobs: [recordedJob('processing')] } as any),
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(50);
+      });
+      expect(muxApi.listRobotsJobs).toHaveBeenCalled();
+
+      const afterFirstLoad = muxApi.listRobotsJobs.mock.calls.length;
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(ROBOTS_POLL_INTERVAL_MS + 100);
+      });
+      expect(muxApi.listRobotsJobs.mock.calls.length).toBeGreaterThan(afterFirstLoad);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('stays silent for an entry whose recorded jobs have all finished', async () => {
+    const muxApi = apiThatReturns([recordedJob('completed')]);
+
+    renderPanel({
+      muxApi,
+      isActive: false,
+      value: value({ robotsJobs: [recordedJob('completed')] } as any),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // The whole point of the `isActive` gate: an editor who never opens this tab pays nothing.
+    expect(muxApi.listRobotsJobs).not.toHaveBeenCalled();
+  });
+
+  it('gives up on a record that has been stuck for longer than the staleness window', async () => {
+    const stale = recordedJob('processing', nowSeconds() - 7 * 60 * 60);
+    const muxApi = apiThatReturns([stale]);
+
+    renderPanel({ muxApi, isActive: false, value: value({ robotsJobs: [stale] } as any) });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // A job Mux purged, or a session that died mid-run, must not make every open of this entry
+    // fetch forever.
+    expect(muxApi.listRobotsJobs).not.toHaveBeenCalled();
+  });
+});

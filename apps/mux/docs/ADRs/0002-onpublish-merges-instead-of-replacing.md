@@ -41,6 +41,12 @@ Alternatives considered:
   the same event — a loop that needs its own guard, for a case the browser already covers on the
   next entry open.
 
+  > **See also, 2026-09-17.** This rejection stands, and it is what leaves a publish mid-job
+  > carrying the job's unfinished state until somebody publishes again. **ADR-0013** takes that up:
+  > it explains why blocking Contentful's Publish button is not available to this app, and adds the
+  > editor notice and the resumed poll that make the second publish an informed, prompt one rather
+  > than an accident.
+
 ## Decision
 
 `mergeMuxAssetIntoField` (in `functions/src/helpers/muxField.ts`) spreads the existing locale value,

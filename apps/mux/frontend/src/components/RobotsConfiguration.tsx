@@ -10,9 +10,9 @@ import {
   Spinner,
   Text,
   TextInput,
-  TextLink,
 } from '@contentful/f36-components';
-import { CycleIcon, ExternalLinkIcon, PlusIcon } from '@contentful/f36-icons';
+import { CycleIcon, PlusIcon } from '@contentful/f36-icons';
+import ExternalLink from './ExternalLink';
 import ApiClient from '../util/apiClient';
 import { RobotsDirective } from '../util/robotsTypes';
 import { ROBOTS_DOCS_URL } from '../util/robots';
@@ -138,14 +138,7 @@ const RobotsConfiguration: FC<RobotsConfigurationProps> = ({
         A directive runs several Robots workflows in order. Pick the ones that should run
         automatically on every video uploaded through this app — editors can still deselect them
         per upload, and run any directive ad hoc from the Robots tab.{' '}
-        <TextLink
-          href={`${ROBOTS_DOCS_URL}-directives`}
-          target="_blank"
-          rel="noopener noreferrer"
-          icon={<ExternalLinkIcon />}
-          alignIcon="end">
-          Author directives in Mux
-        </TextLink>
+        <ExternalLink href={`${ROBOTS_DOCS_URL}-directives`}>Author directives in Mux</ExternalLink>
       </Paragraph>
 
       {directiveIds.length > 0 ? (

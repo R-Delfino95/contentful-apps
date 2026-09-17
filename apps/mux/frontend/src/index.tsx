@@ -57,6 +57,7 @@ import {
 } from './util/muxApi';
 import Sidebar from './locations/Sidebar';
 import { deriveFieldVersion } from './util/muxFieldVersion';
+import { unfinishedJobRecords } from './util/robots';
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -103,12 +104,9 @@ export interface UpdateFieldOptions {
 }
 
 /**
- * A write that was parked behind the publish gate and then dropped without ever reaching the
- * field.
+ * A write that was parked behind the publish gate and then dropped without reaching the field.
  *
- * `updateField` used to return from the deferred path without writing *and without throwing*, so
- * `await updateField(...)` resolved cleanly for a change that no longer existed anywhere. A
- * caller has to be able to tell "written" from "queued and then dropped" — a silent success on a
+ * A caller has to be able to tell "written" from "queued and then dropped": a silent success on a
  * write that never happened is the defect, not the dropping.
  */
 export class DiscardedFieldWriteError extends Error {
@@ -134,16 +132,21 @@ interface DeferredMutation {
 const PUBLISH_GATE_TIMEOUT_MS = 90_000;
 
 /**
+ * Stable empty fallback for the configured directive ids.
+ *
+ * A fresh `[]` on every render changes the identity of the `useCallback`s in `RobotsPanel` that
+ * close over it, and the Robots poll effect depends on those — so the 6 s timer was cleared and
+ * re-armed on every render of this component, and never fired while the asset poll was running.
+ */
+const NO_DIRECTIVE_IDS: string[] = [];
+
+/**
  * Which Mux tracks belong in `captions`.
  *
- * **Duplicated in `functions/src/onPublish.ts` (`isCaptionTrack`) — change one, change the
- * other.** The browser and the publish function are separate packages with independent builds, so
- * there is no module to share; the predicate is small enough to state twice and too important to
- * let drift.
- *
- * It has drifted before. The function used to take `type === 'text'` at any status while this
- * side took subtitles that are ready or preparing, so a publish swapped the field's caption list
- * for a differently-filtered one and errored or non-subtitle text tracks reappeared on the entry.
+ * **Duplicated in `functions/src/onPublish.ts` — change one, change the other.** Separate
+ * packages with independent builds, so there is no module to share. It has drifted before: the
+ * function took `type === 'text'` at any status, so a publish swapped the caption list for a
+ * differently-filtered one and errored text tracks reappeared on the entry.
  */
 function isCaptionTrack(track: { text_type?: string; status?: string }): boolean {
   return (
@@ -155,7 +158,6 @@ function sameNormalized(a: unknown, b: unknown): boolean {
   return JSON.stringify(normalizeForDiff(a)) === JSON.stringify(normalizeForDiff(b));
 }
 
-// Helper for updating pendingActions
 const updatePendingActions = (value, newPendingActions) => {
   const safePendingActions = {
     delete: Array.isArray(newPendingActions.delete) ? newPendingActions.delete : [],
@@ -247,29 +249,23 @@ export class App extends React.Component<AppProps, AppState> {
   detachSysChangeHandler: Function | null = null;
 
   /**
-   * The one place the field value is written.
+   * The one place the field value is written. See ADR-0001.
    *
    * Every caller describes only its own change; the current value is read through
    * `sdk.field.getValue()` rather than React state, and concurrent calls are chained so they
-   * apply one after another. That is what makes two independent poll loops safe: before this
-   * existed, eight of the ten read-modify-write sites read `this.state.value`, which
-   * `onExternalChange` only refreshes asynchronously — so a Robots write landing mid-flight in
-   * the asset loop got rebuilt away, and an asset write landing mid-flight in the Robots loop
-   * clobbered freshly-polled asset state. With a single loop that staleness was invisible; a
-   * second writer is what turns it into a bug.
+   * apply one after another. That is what makes two independent poll loops safe — a mutator that
+   * closes over component state reads a value `onExternalChange` has not refreshed yet.
    *
-   * Two other invariants live here because this is the only place they can be enforced:
+   * Two invariants live here because this is the only place they can be enforced:
    *
    * - **No-op writes never reach the entry.** Every `setValue` bumps the entry version and flips
    *   a published entry to "Changed", so a poll tick that learns nothing must not write. This is
-   *   also what keeps entries that predate Robots byte-identical to what is on disk today.
+   *   also what keeps entries that predate Robots byte-identical to what is on disk.
    * - **Nothing is written while the publish function is mid-rewrite.** See `openPublishGate`.
    *
-   * The returned promise settles when the change has actually been applied — including when it
-   * had to wait behind the publish gate first. It rejects with `DiscardedFieldWriteError` if the
-   * change is dropped instead, so a caller recording something that costs money can tell the two
-   * apart. `options.save` additionally asks the web app to persist the entry; see
-   * `UpdateFieldOptions`.
+   * The returned promise settles when the change has been applied, including after waiting behind
+   * the publish gate, and rejects with `DiscardedFieldWriteError` if it was dropped instead — so a
+   * caller recording something that costs money can tell the two apart.
    */
   updateField = (mutate: FieldMutator, options?: UpdateFieldOptions): Promise<void> => {
     /**
@@ -335,15 +331,13 @@ export class App extends React.Component<AppProps, AppState> {
   /**
    * Stops browser writes while the publish function rewrites the field server-side.
    *
-   * `onPublish` runs in two cycles: it clears `pendingActions` and updates the entry, then
-   * separately rebuilds the field from fresh Mux data and republishes. The app's existing guard
-   * keyed off `pendingActions` still being present, so it lifted one cycle *before* the
-   * destructive write landed. A Robots poll writing in that window used to be overwritten and
-   * then published. `onPublish` merging instead of replacing is what makes the remaining window
-   * survivable; this gate is what makes it narrow. Both are needed — neither alone is enough.
+   * `onPublish` runs in two cycles — clear `pendingActions` and update, then rebuild the field
+   * from fresh Mux data and republish — so a guard keyed off `pendingActions` lifts one cycle
+   * before the destructive write lands. `onPublish` merging rather than replacing (ADR-0002) is
+   * what makes the remaining window survivable; this gate is what makes it narrow.
    *
-   * A heuristic, not a lock: the browser cannot observe the function directly, so the gate is
-   * released on the function's own publish, or by timeout if it never arrives.
+   * A heuristic, not a lock: the browser cannot observe the function, so the gate is released on
+   * the function's own publish, or by timeout if it never arrives.
    */
   private openPublishGate = () => {
     this.publishGateOpen = true;
@@ -375,16 +369,12 @@ export class App extends React.Component<AppProps, AppState> {
 
   /**
    * Apply everything parked behind the publish gate, in one direct write, as the component goes
-   * away.
+   * away — otherwise a Robots job started inside the 90 s gate window loses its record while the
+   * job keeps running and billing.
    *
-   * This used to be `this.deferredMutations = []`. Reachable, and completely silent: stage a
-   * caption change, publish, start a Robots job inside the 90 s gate window, close the tab — the
-   * job record is dropped, the job keeps running and billing, and the caller's `await` had
-   * already resolved as if it were stored.
-   *
-   * Best effort by construction, and deliberately *not* routed through `writeChain`: a promise
-   * chained during unmount may never get a turn. What it does guarantee is the other half —
-   * every parked caller learns whether its change was written.
+   * Best effort, and deliberately *not* routed through `writeChain`: a promise chained during
+   * unmount may never get a turn. What it does guarantee is that every parked caller learns
+   * whether its change was written.
    */
   private flushDeferredMutations = (): void => {
     const queued = this.deferredMutations;
@@ -933,9 +923,12 @@ export class App extends React.Component<AppProps, AppState> {
         throw Error('Something went wrong, we were not able to get the asset.');
       }
 
-      this.setState({
-        raw: assetRes,
-      });
+      // Only when it actually changed. This runs every 500 ms while an asset prepares and every
+      // second for the whole life of a live stream, and an unconditional setState re-renders the
+      // field editor on each tick — which resets the Robots poll timer before it can ever fire.
+      this.setState((previous) =>
+        JSON.stringify(previous.raw) === JSON.stringify(assetRes) ? null : { raw: assetRes }
+      );
 
       let assetError;
       if (assetRes.error) {
@@ -1005,16 +998,12 @@ export class App extends React.Component<AppProps, AppState> {
         });
       }
 
-      // The asset mirror, overlaid onto whatever is stored rather than replacing it.
+      // The asset mirror, overlaid onto whatever is stored rather than replacing it: building a
+      // fresh object from a fixed key list drops every key it does not know about, `robotsJobs`
+      // and `robotsOutputs` included, on every poll tick. Setting a mirror key to `undefined`
+      // still clears it, because JSON drops undefined keys on the way to storage.
       //
-      // This used to build a fresh object from a fixed key list, which meant any key it did not
-      // know about was dropped on every poll tick — `robotsJobs` and `robotsOutputs` included,
-      // silently, several times a second while an asset prepared. Spreading `current` first is
-      // what keeps them. Setting a mirror key to `undefined` still clears it, because
-      // `normalizeForDiff` drops undefined keys before the comparison and JSON drops them on the
-      // way to storage, so "the asset has no captions any more" behaves as it always did.
-      //
-      // The version is derived, never asserted — see `deriveFieldVersion`.
+      // The version is derived, never asserted — see `deriveFieldVersion` and ADR-0006.
       await this.updateField((current) => {
         if (!current) return current;
         return {
@@ -1044,12 +1033,34 @@ export class App extends React.Component<AppProps, AppState> {
         };
       });
 
-      if (drmPlayback && drmPlayback.id) {
-        this.setState({ playerPlaybackId: drmPlayback.id });
-      } else if (publicPlayback && publicPlayback.id) {
-        this.setState({ playerPlaybackId: publicPlayback.id });
-      } else if (signedPlayback && signedPlayback.id) {
-        this.setState({ playerPlaybackId: signedPlayback.id });
+      // The `else` matters: playback IDs can be deleted at Mux — by hand, or by a `moderate`
+      // workflow configured with `on_flagged: delete_playback_ids` — and leaving the last known
+      // id behind keeps a stale token beside it.
+      const nextPlayerPlaybackId =
+        drmPlayback?.id || publicPlayback?.id || signedPlayback?.id || undefined;
+
+      // The player vanishing mid-session needs saying out loud. A `moderate` run started from the
+      // Robots tab can delete every playback ID, and the poll picks that up silently — the notice
+      // in the editor explains the end state, but only a toast connects it to what just happened.
+      const hadPlaybackId = !!(
+        currentValue.playbackId ||
+        currentValue.signedPlaybackId ||
+        currentValue.drmPlaybackId
+      );
+      if (hadPlaybackId && !nextPlayerPlaybackId) {
+        this.props.sdk.notifier.warning(
+          'This video no longer has any playback IDs, so it cannot be played. Add one in Mux and resync.'
+        );
+      }
+
+      this.setState({ playerPlaybackId: nextPlayerPlaybackId });
+      if (!nextPlayerPlaybackId) {
+        this.setState({
+          playbackToken: undefined,
+          posterToken: undefined,
+          storyboardToken: undefined,
+          drmLicenseToken: undefined,
+        });
       }
 
       if (signedPlayback) {
@@ -1623,6 +1634,10 @@ export class App extends React.Component<AppProps, AppState> {
 
       const showPlayer = this.isPlayerReady();
 
+      // Read from the stored value, so this costs no request and is known before the Robots tab
+      // has fetched anything.
+      const unfinishedJobs = unfinishedJobRecords(this.state.value);
+
       return (
         <>
           {modal}
@@ -1703,6 +1718,21 @@ export class App extends React.Component<AppProps, AppState> {
                 <Note variant="negative">
                   This asset is <strong>marked for deletion</strong>. It will be deleted from Mux
                   and Contentful when you publish. You can undo this action before publishing.
+                </Note>
+              </Box>
+            )}
+
+            {/* Publishing mid-job is allowed, and says so rather than being blocked — see
+                ADR-0013. It lives out here rather than in the Robots tab because the editor
+                deciding to publish is not necessarily looking at that tab. */}
+            {unfinishedJobs.length > 0 && (
+              <Box marginBottom="spacingM">
+                <Note variant="warning" data-testid="robots-jobs-in-flight">
+                  {unfinishedJobs.length === 1
+                    ? 'A Robots job is still running on this video.'
+                    : `${unfinishedJobs.length} Robots jobs are still running on this video.`}{' '}
+                  You can publish now, but the entry will publish the job as unfinished — publish
+                  again once it completes to include the result.
                 </Note>
               </Box>
             )}
@@ -1894,7 +1924,7 @@ export class App extends React.Component<AppProps, AppState> {
                         resync={this.resync}
                         defaultDirectiveIds={
                           (this.props.sdk.parameters.installation as InstallationParams)
-                            .muxDefaultDirectiveIds ?? []
+                            .muxDefaultDirectiveIds ?? NO_DIRECTIVE_IDS
                         }
                       />
                     </RobotsErrorBoundary>
@@ -1909,16 +1939,29 @@ export class App extends React.Component<AppProps, AppState> {
                 </Tabs.Panel>
 
                 <Tabs.Panel id="playercode">
-                  {(this.isUsingSigned() || this.isUsingDRM()) && (
+                  {!hasPlaybackId ? (
+                    // A snippet built from no playback ID is `playback-id=""` and
+                    // `player.mux.com/` — copyable, and broken wherever it is pasted.
                     <Box marginBottom="spacingM" marginTop="spacingM">
-                      <Note variant="warning">
-                        {this.isUsingDRM()
-                          ? 'DRM-protected content requires license tokens to be generated on your server. This code snippet is for reference only.'
-                          : 'This code snippet is for limited testing and expires after about 12 hours. Tokens should be generated seperately.'}
+                      <Note variant="warning" data-testid="playercode-noplaybackid">
+                        There is no playback ID to build player code from. Add one in Mux, or
+                        request one in the Playback tab, then resync.
                       </Note>
                     </Box>
+                  ) : (
+                    <>
+                      {(this.isUsingSigned() || this.isUsingDRM()) && (
+                        <Box marginBottom="spacingM" marginTop="spacingM">
+                          <Note variant="warning">
+                            {this.isUsingDRM()
+                              ? 'DRM-protected content requires license tokens to be generated on your server. This code snippet is for reference only.'
+                              : 'This code snippet is for limited testing and expires after about 12 hours. Tokens should be generated seperately.'}
+                          </Note>
+                        </Box>
+                      )}
+                      <PlayerCode params={this.playerParams() || []} />
+                    </>
                   )}
-                  <PlayerCode params={this.playerParams() || []} />
                 </Tabs.Panel>
 
                 <Tabs.Panel id="playback">

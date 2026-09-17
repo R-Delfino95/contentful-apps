@@ -21,7 +21,7 @@ import { RobotsOutputs } from './robotsTypes';
  */
 
 /** The pieces of Robots output that can be written onto an entry field. */
-export type RobotsOutputKey = 'title' | 'description' | 'tags';
+type RobotsOutputKey = 'title' | 'description' | 'tags';
 
 export interface RobotsOutputCandidate {
   key: RobotsOutputKey;
@@ -34,7 +34,7 @@ export interface RobotsOutputCandidate {
   suggestedFieldId?: string;
 }
 
-export interface EntryFieldOption {
+interface EntryFieldOption {
   id: string;
   name: string;
   type: string;
@@ -168,7 +168,7 @@ export interface ApplySelection {
   fieldId: string;
 }
 
-export interface ApplyResult {
+interface ApplyResult {
   applied: Array<{ fieldId: string; key: RobotsOutputKey }>;
   failed: Array<{ fieldId: string; key: RobotsOutputKey; message: string }>;
 }

@@ -1147,7 +1147,7 @@ export function asTaxonomyValue(value: unknown): TaxonomyValue {
 }
 
 /** Splits a row's comma-separated aliases box into trimmed, non-empty aliases. */
-export function taxonomyAliases(row: TaxonomyRow): string[] {
+function taxonomyAliases(row: TaxonomyRow): string[] {
   return (row.aliases ?? '')
     .split(',')
     .map((alias) => alias.trim())
@@ -1185,7 +1185,7 @@ export function isFieldVisible(
 }
 
 /** Splits an `ask-questions` row's comma-separated options box into trimmed, non-empty options. */
-export function questionAnswerOptions(row: QuestionRow): string[] {
+function questionAnswerOptions(row: QuestionRow): string[] {
   return (row.answerOptions ?? '')
     .split(',')
     .map((option) => option.trim())

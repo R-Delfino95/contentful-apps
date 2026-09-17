@@ -1,6 +1,6 @@
 import { FC } from 'react';
-import { Box, Checkbox, FormControl, Note, TextLink } from '@contentful/f36-components';
-import { ExternalLinkIcon } from '@contentful/f36-icons';
+import { Box, Checkbox, FormControl, Note } from '@contentful/f36-components';
+import ExternalLink from '../ExternalLink';
 import { ROBOTS_DOCS_URL } from '../../util/robots';
 
 /**
@@ -35,14 +35,7 @@ const AutomationConfiguration: FC<AutomationConfigurationProps> = ({
       <Note variant="neutral">
         No default Robots directives are configured. An admin can add them in this app&apos;s
         configuration so every new upload runs them automatically.{' '}
-        <TextLink
-          href={`${ROBOTS_DOCS_URL}-directives`}
-          target="_blank"
-          rel="noopener noreferrer"
-          icon={<ExternalLinkIcon />}
-          alignIcon="end">
-          About directives
-        </TextLink>
+        <ExternalLink href={`${ROBOTS_DOCS_URL}-directives`}>About directives</ExternalLink>
       </Note>
     );
   }

@@ -1,21 +1,17 @@
 import * as contentful from 'contentful-management';
 import { muxFetch } from './helpers/muxClient';
 import { buildAssetMirror, mergeMuxAssetIntoField, MuxAssetMirrorKey } from './helpers/muxField';
+import { MuxAsset, MuxAssetMetaUpdate, MuxPlaybackId, MuxTrack } from './helpers/muxTypes';
 
 /**
  * Which Mux tracks belong in the field's `captions`.
  *
- * **Duplicated in `frontend/src/index.tsx` (`isCaptionTrack`) — change one, change the other.**
- * The two are separate packages with independent builds, so there is no module to share; the
- * predicate is small enough to state twice and too important to let drift.
- *
- * It has drifted before. This side used to take `t.type === 'text'` at any status, while the
- * browser took subtitles that are ready or preparing. A publish therefore swapped the field's
- * caption list for a differently-filtered one, and errored or non-subtitle text tracks
- * reappeared on the entry until the next resync removed them again. The browser's filter is the
- * one the app actually applies, so it is the one that wins.
+ * **Duplicated in `frontend/src/index.tsx` — change one, change the other.** Separate packages
+ * with independent builds, so there is no module to share. It has drifted before: this side took
+ * `type === 'text'` at any status, so a publish swapped the caption list for a differently
+ * filtered one and errored text tracks reappeared on the entry. The browser's filter wins.
  */
-function isCaptionTrack(track: any): boolean {
+function isCaptionTrack(track: MuxTrack | undefined): boolean {
   return (
     track?.text_type === 'subtitles' && (track.status === 'ready' || track.status === 'preparing')
   );
@@ -27,13 +23,15 @@ function isCaptionTrack(track: any): boolean {
  * Exported for tests: it is a pure function of the Mux asset, and it is where both the caption
  * filter and the "every mirror key is written, `undefined` included" rule are enforced.
  */
-export function buildMuxAssetMirror(muxAsset: any): Record<string, unknown> {
-  const playbackIds = Array.isArray(muxAsset.playback_ids) ? muxAsset.playback_ids : [];
-  const publicPlayback = playbackIds.find((p: any) => p.policy === 'public');
-  const signedPlayback = playbackIds.find((p: any) => p.policy === 'signed');
-  const drmPlayback = playbackIds.find((p: any) => p.policy === 'drm');
+export function buildMuxAssetMirror(muxAsset: MuxAsset): Record<string, unknown> {
+  const playbackIds: MuxPlaybackId[] = Array.isArray(muxAsset.playback_ids)
+    ? muxAsset.playback_ids
+    : [];
+  const publicPlayback = playbackIds.find((p) => p.policy === 'public');
+  const signedPlayback = playbackIds.find((p) => p.policy === 'signed');
+  const drmPlayback = playbackIds.find((p) => p.policy === 'drm');
 
-  const audioTracks = muxAsset.tracks?.filter((t: any) => t.type === 'audio');
+  const audioTracks = muxAsset.tracks?.filter((t) => t.type === 'audio');
   const captions = muxAsset.tracks?.filter(isCaptionTrack);
 
   // Only the keys this function owns. Notably absent: `version` (derived per locale from what the
@@ -301,7 +299,7 @@ async function runPendingActionsFromEntry(
   return failedPendingActions;
 }
 
-async function fetchMuxAsset(assetId: string, context: any) {
+async function fetchMuxAsset(assetId: string, context: any): Promise<MuxAsset | undefined> {
   const res = await muxFetch(getCredentials(context), 'GET', `/video/v1/assets/${assetId}`);
   if (res.status === 404) {
     return undefined;
@@ -439,7 +437,7 @@ async function createMuxPlaybackId(assetId: string, policy: string, context: any
   console.log(`Creating playbackId for assetId ${assetId} with policy ${policy}`);
   const { muxDRMConfigurationId } = context.appInstallationParameters;
 
-  const body: any = { policy };
+  const body: { policy: string; drm_configuration_id?: string } = { policy };
   if (policy === 'drm') {
     body.drm_configuration_id = muxDRMConfigurationId;
   }
@@ -455,7 +453,7 @@ async function createMuxPlaybackId(assetId: string, policy: string, context: any
   }
 }
 
-async function updateMuxAsset(assetId: string, data: any, context: any) {
+async function updateMuxAsset(assetId: string, data: MuxAssetMetaUpdate, context: any) {
   console.log(`Updating Mux asset for assetId ${assetId} with data ${data}`);
 
   const requestBody = JSON.stringify({

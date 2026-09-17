@@ -1,18 +1,17 @@
 import { FC, Fragment, useState } from 'react';
-import { Badge, Box, IconButton, Note, Table, Text } from '@contentful/f36-components';
+import { Box, IconButton, Table, Text } from '@contentful/f36-components';
 import { ChevronDownIcon, ChevronUpIcon } from '@contentful/f36-icons';
-import {
-  RobotsDirectiveRun,
-  RobotsDirectiveRunStatus,
-  RobotsNodeStatus,
-} from '../../util/robotsTypes';
+import { RobotsDirectiveRun, RobotsNodeState } from '../../util/robotsTypes';
 import { workflowLabel } from '../../util/robotsCatalog';
+import { EM_DASH, formatTimestamp } from '../../util/robotsFormat';
+import EmptyTableNote from './EmptyTableNote';
+import RobotsStatusBadge from './RobotsStatusBadge';
 
 /**
  * Directive runs, one row each, expanding to the per-workflow `node_states`.
  *
- * `node_states` come back "in the order the bindings appear in the Directive's workflows", so the
- * row maps state to workflow by position and does not need a lookup against the directive.
+ * `node_states` come back "in the order the bindings appear in the Directive's workflows", so a
+ * step maps to its workflow by position and needs no lookup against the directive.
  */
 
 interface RobotsDirectiveRunTableProps {
@@ -20,38 +19,44 @@ interface RobotsDirectiveRunTableProps {
   directiveNames: Record<string, string>;
 }
 
-const RUN_VARIANT: Record<
-  RobotsDirectiveRunStatus,
-  'primary' | 'positive' | 'negative' | 'warning' | 'secondary'
-> = {
-  pending: 'secondary',
-  dispatching: 'primary',
-  running: 'primary',
-  waiting: 'secondary',
-  completed: 'positive',
-  partial: 'warning',
-  errored: 'negative',
+const nodeDetail = (node: RobotsNodeState): string => {
+  if (node.reason) return node.reason;
+  if (node.source_workflows?.length) return `Waiting on ${node.source_workflows.join(', ')}`;
+  return EM_DASH;
 };
 
-const NODE_VARIANT: Record<RobotsNodeStatus, 'primary' | 'negative' | 'secondary'> = {
-  dispatched: 'primary',
-  failed: 'negative',
-  waiting_for_resources: 'secondary',
-  waiting_for_source_workflow: 'secondary',
-};
-
-const formatTimestamp = (seconds?: number): string =>
-  seconds ? new Date(seconds * 1000).toLocaleString() : '—';
+const NodeStateRows: FC<{ nodeStates: RobotsNodeState[] }> = ({ nodeStates }) => (
+  <Table>
+    <Table.Head>
+      <Table.Row>
+        <Table.Cell>Workflow</Table.Cell>
+        <Table.Cell>Status</Table.Cell>
+        <Table.Cell>Detail</Table.Cell>
+      </Table.Row>
+    </Table.Head>
+    <Table.Body>
+      {nodeStates.map((node, index) => (
+        <Table.Row key={node.job_id ?? node.reference_id ?? index}>
+          <Table.Cell>
+            {node.workflow_name
+              ? workflowLabel(node.workflow_name)
+              : node.reference_id ?? `Step ${index + 1}`}
+          </Table.Cell>
+          <Table.Cell>
+            <RobotsStatusBadge kind="node" status={node.status} />
+          </Table.Cell>
+          <Table.Cell>{nodeDetail(node)}</Table.Cell>
+        </Table.Row>
+      ))}
+    </Table.Body>
+  </Table>
+);
 
 const RobotsDirectiveRunTable: FC<RobotsDirectiveRunTableProps> = ({ runs, directiveNames }) => {
   const [expandedId, setExpandedId] = useState<string | undefined>();
 
   if (runs.length === 0) {
-    return (
-      <Box marginTop="spacingM" marginBottom="spacingM">
-        <Note variant="neutral">No directive runs for this video yet.</Note>
-      </Box>
-    );
+    return <EmptyTableNote>No directive runs for this video yet.</EmptyTableNote>;
   }
 
   return (
@@ -69,16 +74,17 @@ const RobotsDirectiveRunTable: FC<RobotsDirectiveRunTableProps> = ({ runs, direc
           {runs.map((run) => {
             const isExpanded = expandedId === run.run_id;
             const nodeStates = run.node_states ?? [];
+
             return (
               <Fragment key={run.run_id}>
                 <Table.Row>
                   <Table.Cell>
-                    <Text>{directiveNames[run.directive_id ?? ''] ?? run.directive_id ?? '—'}</Text>
+                    <Text>
+                      {directiveNames[run.directive_id ?? ''] ?? run.directive_id ?? EM_DASH}
+                    </Text>
                   </Table.Cell>
                   <Table.Cell>
-                    <Badge variant={RUN_VARIANT[run.status ?? 'pending'] ?? 'secondary'}>
-                      {run.status ?? 'pending'}
-                    </Badge>
+                    <RobotsStatusBadge kind="run" status={run.status} />
                   </Table.Cell>
                   <Table.Cell>{formatTimestamp(run.started_at)}</Table.Cell>
                   <Table.Cell>
@@ -95,40 +101,7 @@ const RobotsDirectiveRunTable: FC<RobotsDirectiveRunTableProps> = ({ runs, direc
                 {isExpanded && (
                   <Table.Row>
                     <Table.Cell colSpan={4}>
-                      <Table>
-                        <Table.Head>
-                          <Table.Row>
-                            <Table.Cell>Workflow</Table.Cell>
-                            <Table.Cell>Status</Table.Cell>
-                            <Table.Cell>Detail</Table.Cell>
-                          </Table.Row>
-                        </Table.Head>
-                        <Table.Body>
-                          {nodeStates.map((node, index) => (
-                            <Table.Row key={node.job_id ?? node.reference_id ?? index}>
-                              <Table.Cell>
-                                {node.workflow_name
-                                  ? workflowLabel(node.workflow_name)
-                                  : node.reference_id ?? `Step ${index + 1}`}
-                              </Table.Cell>
-                              <Table.Cell>
-                                <Badge
-                                  variant={
-                                    NODE_VARIANT[node.status as RobotsNodeStatus] ?? 'secondary'
-                                  }>
-                                  {(node.status ?? 'unknown').replace(/_/g, ' ')}
-                                </Badge>
-                              </Table.Cell>
-                              <Table.Cell>
-                                {node.reason ??
-                                  (node.source_workflows?.length
-                                    ? `Waiting on ${node.source_workflows.join(', ')}`
-                                    : '—')}
-                              </Table.Cell>
-                            </Table.Row>
-                          ))}
-                        </Table.Body>
-                      </Table>
+                      <NodeStateRows nodeStates={nodeStates} />
                     </Table.Cell>
                   </Table.Row>
                 )}

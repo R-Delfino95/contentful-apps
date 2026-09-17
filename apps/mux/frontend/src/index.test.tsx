@@ -118,6 +118,7 @@ const SDK_MOCK = {
   notifier: {
     error: vi.fn(),
     success: vi.fn(),
+    warning: vi.fn(),
   },
   dialogs: {
     openConfirm: vi.fn(() => Promise.resolve(true)),
@@ -637,6 +638,19 @@ describe('a video whose playback IDs have all been deleted', () => {
     expect(getByName(dom.container, 'muxvideoinput')).toBeVisible();
     expect(dom.queryByTestId('noplaybackids')).toBeNull();
   });
+
+  it('offers no player code it cannot build', () => {
+    const dom = mountIt();
+
+    // f36 tabs activate on mousedown, not click.
+    fireEvent.mouseDown(dom.getByText('Player Code'));
+
+    // The snippet is assembled from the playback ID. With none it reads `playback-id=""` and
+    // `player.mux.com/` — copyable, and broken wherever it is pasted.
+    expect(dom.getByTestId('playercode-noplaybackid')).toBeVisible();
+    expect(dom.container.querySelector('.copycodearea')).toBeNull();
+    expect(dom.container.innerHTML).not.toContain('playback-id=""');
+  });
 });
 
 describe('switching playback policy on an asset with no playback IDs', () => {
@@ -886,5 +900,177 @@ describe('the Robots panel across tab switches', () => {
     expect(panel).not.toBeNull();
     // `isActive` is false, so the panel renders its inert shell and issues no app-action calls.
     expect(panel?.textContent).not.toContain('Run a workflow');
+  });
+});
+
+/**
+ * Playback IDs disappearing under a session that is already open.
+ *
+ * A `moderate` run started from the Robots tab can be configured with
+ * `on_flagged.action: delete_playback_ids`, so the app itself is one of the things that causes
+ * this. The poll notices, the player vanishes and the warning note appears — but none of that
+ * says *why*, and the editor did not necessarily start the run on this screen.
+ */
+describe('a video that loses its playback IDs mid-session', () => {
+  const mountWithAsset = async (playbackIds: unknown[]) => {
+    let stored: any = {
+      version: 5,
+      assetId: 'asset-test-123',
+      ready: true,
+      playbackId: 'public-playback-id',
+    };
+    const warning = vi.fn();
+    const ref = React.createRef<App>();
+    render(
+      <App
+        ref={ref}
+        sdk={
+          {
+            ...SDK_MOCK,
+            notifier: { ...SDK_MOCK.notifier, warning },
+            field: {
+              ...SDK_MOCK.field,
+              getValue: () => stored,
+              setValue: (next: any) => {
+                stored = next;
+                return Promise.resolve();
+              },
+            },
+          } as any
+        }
+      />
+    );
+    const app = ref.current as App;
+    // `this.muxApi` is assigned when `MuxApiService.getInstance()` resolves, so anything set
+    // before that is overwritten. Wait for the mount resync to finish, then take the client over.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const getAsset = vi.fn().mockResolvedValue({
+      data: {
+        id: 'asset-test-123',
+        status: 'ready',
+        playback_ids: [{ id: 'public-playback-id', policy: 'public' }],
+        tracks: [],
+      },
+    });
+    (app as any).muxApi = { getAsset, deleteTrack: vi.fn() };
+    app.setState({ initialResyncDone: true, isPolling: false });
+
+    // One poll to establish the asset as playable.
+    await app.pollForAssetDetails();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    warning.mockClear();
+
+    // Then the playback IDs change under the open session. `isPolling` is cleared in a `setState`
+    // callback, so a second poll issued in the same tick would be swallowed by its own guard.
+    getAsset.mockResolvedValue({
+      data: { id: 'asset-test-123', status: 'ready', playback_ids: playbackIds, tracks: [] },
+    });
+    app.setState({ isPolling: false });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await app.pollForAssetDetails();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    return { app, warning, read: () => stored as MuxContentfulObject };
+  };
+
+  it('says so, once, when the last playback ID goes away', async () => {
+    const { warning } = await mountWithAsset([]);
+
+    expect(warning).toHaveBeenCalledTimes(1);
+    expect(warning.mock.calls[0][0]).toContain('no longer has any playback IDs');
+  });
+
+  it('stops pointing the player at an ID that no longer exists', async () => {
+    const { app } = await mountWithAsset([]);
+
+    // Left behind, the stale id sits beside equally stale tokens. Nothing renders it today
+    // because `isPlayerReady` re-checks the value, but the two must not be allowed to disagree.
+    expect(app.state.playerPlaybackId).toBeUndefined();
+    expect(app.state.playbackToken).toBeUndefined();
+    expect(app.state.drmLicenseToken).toBeUndefined();
+  });
+
+  it('says nothing when the video still has a playback ID', async () => {
+    const { warning, app } = await mountWithAsset([
+      { id: 'public-playback-id', policy: 'public' },
+    ]);
+
+    expect(warning).not.toHaveBeenCalled();
+    expect(app.state.playerPlaybackId).toBe('public-playback-id');
+  });
+});
+
+/**
+ * Publishing while a Robots job is still running.
+ *
+ * Contentful's Publish button lives outside the app's iframe and cannot be disabled, and blocking
+ * it through a content-type validation would mean changing every customer's schema. So publishing
+ * mid-job stays allowed and the editor is told what it means. See ADR-0013.
+ */
+describe('a video with a Robots job still running', () => {
+  const nowSeconds = () => Math.floor(Date.now() / 1000);
+
+  const mountWith = (robotsJobs: unknown[]) =>
+    render(
+      <App
+        sdk={
+          {
+            ...SDK_MOCK,
+            field: {
+              ...SDK_MOCK.field,
+              getValue: () => ({
+                version: 5,
+                assetId: 'asset-test-123',
+                ready: true,
+                playbackId: 'playback-test-123',
+                robotsJobs,
+              }),
+            },
+          } as any
+        }
+      />
+    );
+
+  it('says a publish now will publish the job unfinished', () => {
+    const dom = mountWith([
+      { id: 'rjob_1', workflow: 'summarize', status: 'processing', created_at: nowSeconds() },
+    ]);
+
+    const note = dom.getByTestId('robots-jobs-in-flight');
+    expect(note).toBeVisible();
+    expect(note.textContent).toContain('A Robots job is still running');
+    expect(note.textContent).toContain('publish again once it completes');
+  });
+
+  it('counts them, because a directive dispatches several', () => {
+    const dom = mountWith([
+      { id: 'rjob_1', workflow: 'summarize', status: 'processing', created_at: nowSeconds() },
+      { id: 'rjob_2', workflow: 'moderate', status: 'pending', created_at: nowSeconds() },
+    ]);
+
+    expect(dom.getByTestId('robots-jobs-in-flight').textContent).toContain('2 Robots jobs');
+  });
+
+  it('says nothing once every recorded job has finished', () => {
+    const dom = mountWith([
+      { id: 'rjob_1', workflow: 'summarize', status: 'completed', created_at: nowSeconds() },
+      { id: 'rjob_2', workflow: 'moderate', status: 'errored', created_at: nowSeconds() },
+    ]);
+
+    expect(dom.queryByTestId('robots-jobs-in-flight')).toBeNull();
+  });
+
+  it('stops nagging about a record that has been stuck for hours', () => {
+    const dom = mountWith([
+      {
+        id: 'rjob_1',
+        workflow: 'summarize',
+        status: 'processing',
+        created_at: nowSeconds() - 7 * 60 * 60,
+      },
+    ]);
+
+    // A job Mux purged, or a session that died mid-run. The notice would otherwise sit on the
+    // entry for the rest of its life.
+    expect(dom.queryByTestId('robots-jobs-in-flight')).toBeNull();
   });
 });

@@ -146,7 +146,6 @@ export type RobotsCapabilityState =
   | 'units-exhausted';
 
 /** What the tab renders. `loading` and `error` are UI states, not capability states. */
-export type RobotsTabState = RobotsCapabilityState | 'loading' | 'error';
 
 export interface RobotsCapability {
   state: RobotsCapabilityState;
