@@ -1,9 +1,11 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('contentful-management', () => ({ createClient: vi.fn() }));
 vi.mock('./helpers/muxClient', () => ({ muxFetch: vi.fn() }));
 
-import { buildMuxAssetMirror, findPendingActionsInMuxFields } from './onPublish';
+import { createClient } from 'contentful-management';
+import { muxFetch } from './helpers/muxClient';
+import { buildMuxAssetMirror, findPendingActionsInMuxFields, handler } from './onPublish';
 import { MUX_ASSET_MIRROR_KEYS, mergeMuxAssetIntoField } from './helpers/muxField';
 
 const muxField = (locales: Record<string, unknown>) => ({ muxVideo: locales });
@@ -185,5 +187,110 @@ describe('buildMuxAssetMirror', () => {
     expect(mirror.ready).toBe(false);
     expect(mirror.playbackId).toBeUndefined();
     expect(mirror.captions).toBeUndefined();
+  });
+});
+
+/**
+ * The create half of `pendingActions`, driven through the handler.
+ *
+ * Contentful can now *ask* for a playback ID, not only swap one: an asset whose playback IDs a
+ * `moderate` run deleted is recoverable from the Playback tab, through this path. Which makes the
+ * shape of a queued create load-bearing in a way it was not when every create came paired with a
+ * delete of the ID it replaced.
+ */
+describe('handler — creating a playback ID from a queued action', () => {
+  const entryWith = (create: unknown[]) => ({
+    sys: {
+      id: 'entry-1',
+      environment: { sys: { id: 'master' } },
+      space: { sys: { id: 'space-1' } },
+    },
+    fields: {
+      muxVideo: {
+        'en-US': {
+          assetId: 'asset-1',
+          pendingActions: { delete: [], create, update: [] },
+        },
+      },
+    },
+  });
+
+  const runHandler = async (create: unknown[]) => {
+    const entry = entryWith(create);
+    let stored: any = JSON.parse(JSON.stringify(entry));
+
+    vi.mocked(createClient).mockReturnValue({
+      entry: {
+        get: vi.fn(async () => JSON.parse(JSON.stringify(stored))),
+        update: vi.fn(async (_params: unknown, updated: any) => {
+          stored = updated;
+          return updated;
+        }),
+        publish: vi.fn(async () => stored),
+      },
+    } as any);
+
+    vi.mocked(muxFetch).mockImplementation(
+      async (_credentials: unknown, method: string) =>
+        ({
+          ok: true,
+          status: 200,
+          json: async () =>
+            method === 'GET'
+              ? { data: { id: 'asset-1', status: 'ready', playback_ids: [] } }
+              : {},
+        } as any)
+    );
+
+    await handler(
+      { type: 'appevent.handler', body: entry },
+      {
+        appInstallationParameters: {
+          muxAccessTokenId: 'id',
+          muxAccessTokenSecret: 'secret',
+          muxDRMConfigurationId: 'drm-config-1',
+        },
+        cmaClientOptions: {},
+      }
+    );
+
+    return vi
+      .mocked(muxFetch)
+      .mock.calls.filter(([, , path]) => path.includes('/playback-ids'));
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('posts the queued policy', async () => {
+    const calls = await runHandler([
+      { type: 'playback', data: { policy: 'public', assetId: 'asset-1' }, retry: 0 },
+    ]);
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0][1]).toBe('POST');
+    expect(calls[0][2]).toBe('/video/v1/assets/asset-1/playback-ids');
+    expect(JSON.parse(calls[0][3] as string)).toEqual({ policy: 'public' });
+  });
+
+  it('attaches the DRM configuration only for a drm create', async () => {
+    const calls = await runHandler([
+      { type: 'playback', data: { policy: 'drm', assetId: 'asset-1' }, retry: 0 },
+    ]);
+
+    expect(JSON.parse(calls[0][3] as string)).toEqual({
+      policy: 'drm',
+      drm_configuration_id: 'drm-config-1',
+    });
+  });
+
+  it('refuses a create with no policy instead of posting an empty body', async () => {
+    // `JSON.stringify({ policy: undefined })` is `{}`, so this would have let Mux pick the policy
+    // on an asset whose playback a moderation run had just deleted. The twin of the delete action
+    // with no `id`, which issued `DELETE /assets/{id}/playback-ids` against the collection.
+    const calls = await runHandler([{ type: 'playback', data: { assetId: 'asset-1' }, retry: 0 }]);
+
+    expect(calls).toEqual([]);
   });
 });

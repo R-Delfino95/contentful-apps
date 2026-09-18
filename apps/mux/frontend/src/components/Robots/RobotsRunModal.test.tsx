@@ -100,6 +100,68 @@ describe('RobotsRunModal form widgets', () => {
     expect(screen.getByText(/Add at least one replacement rule/)).toBeInTheDocument();
   });
 
+  /**
+   * A parameter that can make the video unplayable is armed on the form and explained on the
+   * confirm step. The point of the two screens is that the second one is where the editor learns
+   * what the first one did — see ADR-0014.
+   */
+  describe("moderate's playback-ID deletion", () => {
+    const arm = async () => {
+      const rendered = renderModal({ initialWorkflow: 'moderate' });
+      await userEvent.selectOptions(
+        screen.getByLabelText('If the video is flagged'),
+        'delete_playback_ids'
+      );
+      return rendered;
+    };
+
+    it('does not warn about a run that only records scores', async () => {
+      renderModal({ initialWorkflow: 'moderate' });
+      expect((screen.getByLabelText('If the video is flagged') as HTMLSelectElement).value).toBe('');
+
+      await userEvent.click(screen.getByRole('button', { name: 'Continue' }));
+      expect(await screen.findByText(/consume Mux AI units/)).toBeInTheDocument();
+      expect(screen.queryByTestId('robots-confirm-warning')).not.toBeInTheDocument();
+    });
+
+    it('names the consequence on the confirm step before the job is created', async () => {
+      await arm();
+      // Nothing on the form screen has run anything yet, and the warning belongs where the
+      // decision is committed.
+      expect(screen.queryByTestId('robots-confirm-warning')).not.toBeInTheDocument();
+
+      await userEvent.click(screen.getByRole('button', { name: 'Continue' }));
+      const warning = await screen.findByTestId('robots-confirm-warning');
+      expect(warning).toHaveTextContent('unplayable');
+      expect(warning).toHaveTextContent('Playback tab');
+    });
+
+    it('drops the warning again when the editor goes back and disarms it', async () => {
+      const { onRun } = await arm();
+      await userEvent.click(screen.getByRole('button', { name: 'Continue' }));
+      expect(await screen.findByTestId('robots-confirm-warning')).toBeInTheDocument();
+
+      await userEvent.click(screen.getByRole('button', { name: 'Back' }));
+      await userEvent.selectOptions(screen.getByLabelText('If the video is flagged'), '');
+      await userEvent.click(screen.getByRole('button', { name: 'Continue' }));
+
+      expect(await screen.findByText(/consume Mux AI units/)).toBeInTheDocument();
+      expect(screen.queryByTestId('robots-confirm-warning')).not.toBeInTheDocument();
+      expect(onRun).not.toHaveBeenCalled();
+    });
+
+    it('sends the action Mux documents when the run is confirmed', async () => {
+      const { onRun } = await arm();
+      await userEvent.click(screen.getByRole('button', { name: 'Continue' }));
+      await userEvent.click(screen.getByRole('button', { name: 'Run Moderate' }));
+
+      expect(onRun).toHaveBeenCalledWith('moderate', {
+        asset_id: 'asset-1',
+        on_flagged: { action: 'delete_playback_ids' },
+      });
+    });
+  });
+
   it('keeps the profanity fields — and the request — behind one explicit opt-in', async () => {
     renderModal();
     await pick('edit-captions');
@@ -283,15 +345,19 @@ describe('RobotsRunModal taxonomy editor', () => {
     expect(screen.getByText('Topic taxonomy')).toBeInTheDocument();
   });
 
-  it('leaves "values outside this list" unanswered until the editor answers it', async () => {
+  it('offers "allow values outside this list" as a checkbox, ticked, with no third state', async () => {
+    // It was a three-option select whose empty member omitted `allow_other`. The API rejects the
+    // taxonomy object without it, so there is no "no preference" to offer — and the remaining
+    // default has to be the permissive one, since clearing it filters the output.
     renderModal({ initialWorkflow: 'summarize' });
-    const select = screen.getByLabelText('Values outside this list') as HTMLSelectElement;
-    expect(select.value).toBe('');
+    const checkbox = screen.getByLabelText('Allow values outside this list') as HTMLInputElement;
+    expect(checkbox.checked).toBe(true);
+    expect(screen.queryByLabelText('Values outside this list')).not.toBeInTheDocument();
 
-    await userEvent.selectOptions(select, 'false');
-    expect((screen.getByLabelText('Values outside this list') as HTMLSelectElement).value).toBe(
-      'false'
-    );
+    await userEvent.click(checkbox);
+    expect(
+      (screen.getByLabelText('Allow values outside this list') as HTMLInputElement).checked
+    ).toBe(false);
   });
 
   it('will not run a taxonomy that has a name but nothing in it', async () => {
@@ -300,7 +366,7 @@ describe('RobotsRunModal taxonomy editor', () => {
 
     expect(
       await screen.findByText(
-        'Tag taxonomy: add at least one value, or clear the rest of the taxonomy.'
+        'Tag taxonomy: add at least one value, or clear the taxonomy name.'
       )
     ).toBeInTheDocument();
   });

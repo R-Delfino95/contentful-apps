@@ -11,6 +11,14 @@ import { RobotsWorkflow } from './robotsTypes';
  * Where the reference and a guide disagree on a limit, the stricter figure wins: the looser one
  * only buys a 400 on a job the editor already confirmed.
  *
+ * **The reference's rendered *Required* markers are not authoritative for nested objects, and the
+ * running API is.** These pages render no required badge on any sub-field of a request-body
+ * object, which reads as "every part is optional" and is not what the API enforces: sending
+ * `tag_taxonomy` without `allow_other` is rejected with `expected boolean, received undefined`,
+ * on a page that marks `allow_other` no differently from anything beside it. Where a sub-field's
+ * required-ness matters, send it unconditionally or make the form unable to leave it out — a
+ * badge that is not there is not evidence. See ADR-0012.
+ *
  * What is deliberately left out, and why:
  *
  * - `summarize`'s and `generate-chapters`' `prompt_overrides`. The reference marks it on both
@@ -18,10 +26,15 @@ import { RobotsWorkflow } from './robotsTypes';
  *   output_steering for new integrations." — so exposing it would be building the form against a
  *   surface Mux has already superseded. Nothing in this app sends it; see the test that asserts
  *   no catalog parameter path starts with it.
- * - `moderate`'s `on_flagged.action: delete_playback_ids`, on judgement rather than shape: it
- *   makes the video unplayable, which is not something to offer behind a checkbox in a CMS.
  * - `edit-captions`'s `auto_censor_profanity.detection_method`, because `llm` is its only
  *   documented value — a select with one option is furniture.
+ *
+ * `moderate`'s `on_flagged.action` used to be on that list, on the judgement that a parameter
+ * which makes the video unplayable is not something to offer behind a checkbox in a CMS. **That
+ * decision is reversed.** It is exposed as a select whose default sends nothing, and the risk is
+ * carried by `confirmWarning` — a warning the run modal's confirm step must show before the job
+ * is created — rather than by leaving the editor without the control. Contentful can now put a
+ * playback ID back (ADR-0015), which is what made arming this a complete feature. See ADR-0014.
  *
  * The controlled vocabularies — `find-scenes`' and `find-key-moments`'
  * `output_steering.topic_taxonomy`, `summarize`'s `output_steering.tag_taxonomy` — used to be on
@@ -107,6 +120,26 @@ export interface RobotsTaxonomyLimits {
   maxSerializedLength?: number;
 }
 
+/**
+ * A warning the confirm step must show before a run that would arm a destructive parameter.
+ *
+ * Declared beside the control it belongs to rather than written into the modal, for the same
+ * reason `showWhen` is: the catalog is where a parameter's consequences are already recorded, and
+ * a warning that lives in component code drifts from the option that triggers it. It is keyed on
+ * a value rather than merely on the field being set, because the risk is the value's, not the
+ * parameter's — `on_flagged.action` is harmless until it says `delete_playback_ids`.
+ *
+ * This is not a validation error. The run is legitimate and the editor may well want it; what
+ * they must not do is arrive at it without being told, which is the difference between a
+ * confirmed decision and a surprise.
+ */
+export interface RobotsConfirmWarning {
+  /** The field value this warning belongs to. */
+  whenValue: string;
+  title: string;
+  body: string;
+}
+
 export interface RobotsParamField {
   kind: RobotsParamKind;
   /** Dotted path within the job's `parameters` object. */
@@ -144,6 +177,8 @@ export interface RobotsParamField {
    * reaches Mux — `paramsFromFormValues` drops it.
    */
   formOnly?: boolean;
+  /** Warnings the confirm step must show, by the value that arms them. */
+  confirmWarnings?: RobotsConfirmWarning[];
 }
 
 export type RobotsCategory = 'Accessibility' | 'Insights' | 'Structure' | 'Trust & Safety';
@@ -996,12 +1031,42 @@ export const ROBOTS_CATALOG: RobotsWorkflowDefinition[] = [
         min: 0,
         step: 1,
       },
-    ],
-    notes: [
-      // `on_flagged: { action: 'delete_playback_ids' }` is deliberately not exposed. It makes the
-      // video unplayable as a side effect of a moderation run, which is not something an editor
-      // should be able to trigger from a form field in a CMS.
-      'Automatic playback-ID deletion on a flagged result is not offered here. Configure it in Mux if you need it.',
+      {
+        // The whole of `on_flagged`, which is an optional object with exactly one documented
+        // field: "Action to take when exceeds_threshold is true." One select carries it, so the
+        // `formOnly` + `showWhen` pairing from ADR-0011 is not needed here — there is no second
+        // sub-field for a gate to reveal, and `buildRobotsParameters` never creates the parent
+        // object for a value it was not given.
+        //
+        // `delete_playback_ids` is the only value the reference lists. A select with one option
+        // is furniture, but this one has two: doing nothing is the other, and it is the default.
+        // Exposed after being deliberately omitted — see the header and ADR-0014.
+        kind: 'select',
+        name: 'on_flagged.action',
+        label: 'If the video is flagged',
+        helpText:
+          'Deleting the playback IDs makes the video unplayable everywhere it is embedded, the ' +
+          'moment the job finishes. The asset itself is kept, and the Playback tab can request a ' +
+          'new playback ID.',
+        options: [
+          { value: '', label: 'Do nothing — just record the scores' },
+          { value: 'delete_playback_ids', label: 'Delete every playback ID' },
+        ],
+        defaultValue: '',
+        confirmWarnings: [
+          {
+            whenValue: 'delete_playback_ids',
+            title: 'This run can make the video unplayable',
+            body:
+              'If the content scores over a threshold, Mux deletes every playback ID on this ' +
+              'asset. Playback stops everywhere it is embedded, not just in Contentful, and ' +
+              'anything that needs a playback ID breaks with it — including the other workflows ' +
+              'of a directive run on this asset. The asset, its captions and everything recorded ' +
+              'on this entry are kept, and the Playback tab can request a new playback ID, which ' +
+              'is applied when you publish.',
+          },
+        ],
+      },
     ],
   },
 ];
@@ -1109,18 +1174,23 @@ export interface TaxonomyRow {
  * One whole `topic_taxonomy` / `tag_taxonomy` object, as the form holds it.
  *
  * Edited as a single field rather than three dotted paths (`…taxonomy.name`, `…taxonomy.values`,
- * `…taxonomy.allow_other`) because the object is atomic to the API: a name and an `allow_other`
- * with no values is a controlled vocabulary that controls nothing, and `summarize` documents
- * `values` as "Supports 1-50 values" — a lower bound of one. Keeping it in one field is what lets
- * `toApiParamValue` send the whole thing or none of it.
+ * `…taxonomy.allow_other`) because the object is atomic to the API: a name with no values is a
+ * controlled vocabulary that controls nothing, and `summarize` documents `values` as "Supports
+ * 1-50 values" — a lower bound of one. Keeping it in one field is what lets `toApiParamValue` send
+ * the whole thing or none of it, which is also what keeps `allow_other` from ever being sent on
+ * its own.
  *
- * `allowOther` is a tri-state string because the reference documents no default for `allow_other`
- * on any of the three pages. A checkbox cannot say "absent", and preselecting either side would
- * silently decide the question for every run — the same argument as `NO_PREFERENCE_LABEL`.
+ * `allowOther` is a plain boolean, and always sent with the object. It used to be a tri-state
+ * string whose empty member omitted the key, on the reading that no page marks `allow_other`
+ * Required — but the running API rejects the object without it (`expected boolean, received
+ * undefined`), so "absent" was never one of the outcomes. It defaults to `true`: `false` is
+ * documented on `summarize` as a hard filter, "generated tags are filtered to taxonomy labels and
+ * aliases", and an editor who adds a vocabulary without touching this control must not have the
+ * rest of the model's output silently discarded for it.
  */
 export interface TaxonomyValue {
   name: string;
-  allowOther: '' | 'true' | 'false';
+  allowOther: boolean;
   values: TaxonomyRow[];
 }
 
@@ -1132,7 +1202,7 @@ export const emptyTaxonomyRow = (): TaxonomyRow => ({
 
 export const emptyTaxonomyValue = (): TaxonomyValue => ({
   name: '',
-  allowOther: '',
+  allowOther: true,
   values: [],
 });
 
@@ -1141,7 +1211,9 @@ export function asTaxonomyValue(value: unknown): TaxonomyValue {
   const partial = (value ?? {}) as Partial<TaxonomyValue>;
   return {
     name: typeof partial.name === 'string' ? partial.name : '',
-    allowOther: partial.allowOther === 'true' || partial.allowOther === 'false' ? partial.allowOther : '',
+    // Anything that is not a boolean reads as `true`, which covers both an untouched field and a
+    // form value stored before this was a checkbox.
+    allowOther: typeof partial.allowOther === 'boolean' ? partial.allowOther : true,
     values: Array.isArray(partial.values) ? partial.values : [],
   };
 }
@@ -1235,14 +1307,16 @@ export function toApiParamValue(field: RobotsParamField, value: unknown): unknow
           ...(aliases.length > 0 && { aliases }),
         };
       });
-    // No values, no vocabulary. A name or an `allow_other` on its own describes a list that is not
-    // there — `validateParams` says so rather than letting the object go out half-built.
+    // No values, no vocabulary. A name on its own describes a list that is not there —
+    // `validateParams` says so rather than letting the object go out half-built.
     if (taxonomyValues.length === 0) return undefined;
     const name = taxonomy.name.trim();
+    // `allow_other` is unconditional: the API rejects the object without it. `name` stays
+    // conditional — see the note above `TaxonomyValue`.
     return {
       ...(name !== '' && { name }),
       values: taxonomyValues,
-      ...(taxonomy.allowOther !== '' && { allow_other: taxonomy.allowOther === 'true' }),
+      allow_other: taxonomy.allowOther,
     };
   }
 
@@ -1276,6 +1350,30 @@ export function paramsFromFormValues(
 }
 
 /**
+ * The warnings the confirm step must show for what this form currently describes.
+ *
+ * Read off the same values and the same `isFieldVisible` predicate that decide what is sent, so a
+ * parameter cannot be armed without its warning or warned about after being hidden. Derived rather
+ * than stored: the editor can go back from the confirm step, change the select and return.
+ */
+export function confirmWarnings(
+  definition: RobotsWorkflowDefinition,
+  values: Record<string, unknown>,
+  context: RobotsAssetContext = {}
+): RobotsConfirmWarning[] {
+  const warnings: RobotsConfirmWarning[] = [];
+  for (const field of definition.params) {
+    if (!field.confirmWarnings) continue;
+    if (!isFieldVisible(field, values, context)) continue;
+    // No `?? ''` fallback: a field with no value and no default is `undefined`, which matches no
+    // `whenValue` — which is the right answer, and one branch fewer than spelling it out.
+    const value = values[field.name] ?? field.defaultValue;
+    warnings.push(...field.confirmWarnings.filter((warning) => warning.whenValue === value));
+  }
+  return warnings;
+}
+
+/**
  * The documented caps on one controlled vocabulary, checked against what would actually be sent.
  *
  * Only limits the field declares are enforced. `find-scenes` and `find-key-moments` document none
@@ -1290,10 +1388,13 @@ function taxonomyErrors(
   const taxonomy = asTaxonomyValue(formValue);
 
   if (apiValue === undefined) {
-    // Nothing is sent, so nothing can be over a cap — but if the editor filled in the parts around
-    // the list, silently dropping their work is exactly what this codebase keeps having to undo.
-    if (taxonomy.name.trim() !== '' || taxonomy.allowOther !== '') {
-      errors.push(`${field.label}: add at least one value, or clear the rest of the taxonomy.`);
+    // Nothing is sent, so nothing can be over a cap — but if the editor named the vocabulary,
+    // silently dropping their work is exactly what this codebase keeps having to undo.
+    //
+    // `allowOther` is no longer part of this test. As a boolean it always holds one of its two
+    // values, so it can no longer distinguish "the editor decided something here" from "untouched".
+    if (taxonomy.name.trim() !== '') {
+      errors.push(`${field.label}: add at least one value, or clear the taxonomy name.`);
     }
     return errors;
   }

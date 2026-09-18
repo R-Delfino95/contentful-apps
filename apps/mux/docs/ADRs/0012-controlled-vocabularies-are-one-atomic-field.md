@@ -69,6 +69,43 @@ the editor rather than dropped in silence.
 **`allowOther` is a tri-state string (`''` / `'true'` / `'false'`), sent as a boolean or not at
 all.** `''` is "No preference", which is absence.
 
+> **Superseded 2026-09-17.** `allowOther` is a plain boolean, always sent, defaulting to `true`.
+> The tri-state was built on the reading recorded above — that no page marks a sub-field
+> *Required*, so absence must be a legal outcome. The running API disagrees: a `summarize` run
+> carrying a filled-in `tag_taxonomy` and no `allow_other` is refused with
+> `parameters.output_steering.tag_taxonomy.allow_other: Invalid input: expected boolean, received
+> undefined`. "No preference" was never one of the three outcomes; it was a fourth that does not
+> exist, and the control offering it made the feature unusable for the one workflow whose caps we
+> had gone to the trouble of transcribing.
+>
+> **The general lesson, which outlives this parameter: the reference's rendered *Required* markers
+> are not evidence for these nested objects, and the API is the authority.** This is the second
+> time a careful reading of these pages was wrong in a way only a real request revealed — the
+> first was every `''` select claiming "Default" (ADR-0011). A page that renders no badge
+> anywhere renders none on the required fields either, so "no badge" carries no information. Where
+> a sub-field's required-ness decides the shape, the safe move is to send it unconditionally, or
+> to make the form incapable of leaving it out — the same move this ADR already made for `values`,
+> applied to one more key.
+>
+> The default is `true` rather than `false` because `false` is documented on `summarize` as a hard
+> filter — "generated tags are filtered to taxonomy labels and aliases". With no third state left,
+> some editor's untouched runs get whichever side we pick, and the side that silently discards
+> model output is the worse one to hand someone who never opened the control. Clearing the
+> checkbox is a deliberate act; having your tags filtered because you typed a vocabulary is not.
+>
+> Two consequences elsewhere. `validateParams` no longer treats `allowOther` as a sign the editor
+> engaged with the taxonomy — a boolean always holds one of its values, so only a typed `name`
+> can still mean "you started something you did not finish"; the message names the name. And
+> `asTaxonomyValue` reads anything non-boolean as `true`, which covers both an untouched field and
+> a form value left over from the tri-state.
+>
+> **Not changed, and worth naming as the untested part.** `name`, `values[].description` and
+> `values[].aliases` are still omitted when empty. We have a real response for `allow_other` and
+> for nothing else, and requiring a name on no evidence would block a run Mux may well accept —
+> which is the same class of mistake as inventing a default, one level up. `values` is safe
+> already: it is always present when the object is. If one of the three ever comes back with its
+> own `received undefined`, that response is the evidence, and the fix is this one again.
+
 **Caps are declared as data per field, in `taxonomyLimits`, and an absent limit means the reference
 states none.** `summarize` gets all six documented figures plus the serialized-size cap, measured
 over `JSON.stringify` of the object actually sent. `find-scenes` and `find-key-moments` get none.

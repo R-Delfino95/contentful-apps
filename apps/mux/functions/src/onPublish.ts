@@ -244,14 +244,23 @@ async function runPendingActionsFromEntry(
           try {
             switch (createAction.type) {
               case 'playback':
+                // A create with no policy POSTs `{}`, which is Mux's choice of policy rather than
+                // the editor's — on an asset whose playback may have just been deleted by a
+                // moderation run, that is the wrong thing to guess. Dropped rather than retried:
+                // no number of publishes adds a policy to an action that never had one. The delete
+                // side had the same hole with a missing `id`, fixed where the action is queued.
+                if (!createAction.data?.policy) {
+                  console.warn('Skipping playback create with no policy:', createAction);
+                  break;
+                }
                 await createMuxPlaybackId(
                   pendingActions.assetId,
-                  createAction.data?.policy,
+                  createAction.data.policy,
                   context
                 );
                 break;
               default:
-                console.warn(`Unsupported deleteAction type: ${createAction.type}`);
+                console.warn(`Unsupported createAction type: ${createAction.type}`);
             }
           } catch (err) {
             console.error(`Error in create of Mux for ${fieldKey}:`, err);

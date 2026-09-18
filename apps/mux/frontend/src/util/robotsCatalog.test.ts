@@ -6,6 +6,7 @@ import {
   TaxonomyRow,
   TaxonomyValue,
   buildRobotsParameters,
+  confirmWarnings,
   defaultParamValues,
   emptyQuestionRow,
   emptyTaxonomyValue,
@@ -91,12 +92,23 @@ describe('the catalog itself', () => {
     expect(offenders).toEqual([]);
   });
 
-  it('labels the omit-this-parameter option "No preference" on every select that offers one', () => {
-    for (const entry of sentinelOptions()) {
+  it('labels the omit-this-parameter option "No preference" on every steering select', () => {
+    // `moderate.on_flagged.action` is the one select whose `''` is not absent steering. The
+    // reference documents `on_flagged` as an optional object, so leaving it out has a definite
+    // meaning — nothing is done to the asset — and "No preference" would imply Mux might still
+    // act. It is carved out by name rather than by loosening the rule, so a steering select added
+    // later is still covered by construction.
+    const steering = sentinelOptions().filter(
+      (entry) => !entry.startsWith('moderate.on_flagged.action ')
+    );
+    for (const entry of steering) {
       expect(entry).toMatch(/ → No preference$/);
     }
+    expect(sentinelOptions()).toContain(
+      'moderate.on_flagged.action → Do nothing — just record the scores'
+    );
     // The ten known ones, so deleting the option rather than relabelling it does not pass silently.
-    expect(sentinelOptions()).toHaveLength(10);
+    expect(steering).toHaveLength(10);
   });
 
   it('still sends nothing for the sentinel, so the relabel changed only the words', () => {
@@ -476,6 +488,68 @@ describe('paramsFromFormValues', () => {
       language_code: 'en',
       thresholds: { sexual: 0.6 },
       output_steering: { scope: { start_time: 10, end_time: 90 } },
+    });
+  });
+
+  /**
+   * `on_flagged` was deliberately left out — it makes the video unplayable. That is reversed; the
+   * risk is carried by the confirm step instead. See ADR-0014.
+   */
+  describe("moderate's on_flagged action", () => {
+    const field = () =>
+      ROBOTS_CATALOG_BY_KEY.moderate.params.find(
+        (candidate) => candidate.name === 'on_flagged.action'
+      ) as RobotsParamField;
+
+    it('offers exactly the values the reference documents, and nothing else', () => {
+      // "Action to take when exceeds_threshold is true." One documented value, plus the `''` that
+      // omits the whole optional object. An invented member here is a 400 the editor cannot act on.
+      expect(field().options?.map((option) => option.value)).toEqual(['', 'delete_playback_ids']);
+      expect(field().defaultValue).toBe('');
+    });
+
+    it('sends nothing at all unless the editor picks the action', () => {
+      // `on_flagged` is optional, so the parent object must not appear empty either.
+      const untouched = paramsFromFormValues(ROBOTS_CATALOG_BY_KEY.moderate, 'asset-1', {});
+      expect(untouched).toEqual({ asset_id: 'asset-1' });
+      expect(untouched).not.toHaveProperty('on_flagged');
+    });
+
+    it('nests the action under on_flagged when it is picked', () => {
+      expect(
+        paramsFromFormValues(ROBOTS_CATALOG_BY_KEY.moderate, 'asset-1', {
+          'on_flagged.action': 'delete_playback_ids',
+        })
+      ).toEqual({ asset_id: 'asset-1', on_flagged: { action: 'delete_playback_ids' } });
+    });
+
+    it('warns at the confirm step only once the destructive value is chosen', () => {
+      const definition = ROBOTS_CATALOG_BY_KEY.moderate;
+      expect(confirmWarnings(definition, {})).toEqual([]);
+      expect(confirmWarnings(definition, { 'on_flagged.action': '' })).toEqual([]);
+
+      const armed = confirmWarnings(definition, {
+        'on_flagged.action': 'delete_playback_ids',
+      });
+      expect(armed).toHaveLength(1);
+      expect(armed[0].title).toBe('This run can make the video unplayable');
+      // The reference's own caveat about directive runs, and the way back out.
+      expect(armed[0].body).toContain('directive run');
+      expect(armed[0].body).toContain('Playback tab');
+    });
+
+    it('no longer claims the app does not offer this', () => {
+      // The note said "Automatic playback-ID deletion on a flagged result is not offered here."
+      // A reversed decision has to stop asserting the old one.
+      const notes = (ROBOTS_CATALOG_BY_KEY.moderate.notes ?? []).join(' ');
+      expect(notes).not.toContain('not offered here');
+    });
+
+    it('warns for no other workflow, so the confirm step stays worth reading', () => {
+      for (const definition of ROBOTS_CATALOG) {
+        if (definition.key === 'moderate') continue;
+        expect(confirmWarnings(definition, {})).toEqual([]);
+      }
     });
   });
 
@@ -1099,7 +1173,7 @@ describe('controlled vocabularies', () => {
       paramsFromFormValues(definition, 'asset-1', {
         'output_steering.tag_taxonomy': value({
           name: 'Content pillars',
-          allowOther: 'false',
+          allowOther: false,
           values: [
             { label: 'Tutorial', description: 'Step-by-step teaching', aliases: 'how-to, guide' },
             { label: 'Interview', description: '', aliases: '' },
@@ -1125,26 +1199,41 @@ describe('controlled vocabularies', () => {
     });
   });
 
-  it('leaves allow_other out entirely when the editor expressed no preference', () => {
-    // The reference documents no default for `allow_other` on any of the three pages, so a
-    // preselected side would silently steer every run.
-    const sent = toApiParamValue(
-      taxonomyField('summarize', 'output_steering.tag_taxonomy'),
-      value({ values: [{ label: 'Tutorial', description: '', aliases: '' }] })
-    ) as Record<string, unknown>;
-    expect(sent).toEqual({ values: [{ label: 'Tutorial' }] });
-    expect(sent).not.toHaveProperty('allow_other');
-  });
+  /**
+   * `allow_other` is required in practice on all three taxonomies, and the reference does not say
+   * so — it renders no *Required* badge on any sub-field of these objects. Omitting it is a 400:
+   * `parameters.output_steering.tag_taxonomy.allow_other: Invalid input: expected boolean,
+   * received undefined`. These tests are here so it cannot go back to being omitted.
+   */
+  it.each([
+    ['summarize', 'output_steering.tag_taxonomy'],
+    ['find-scenes', 'output_steering.topic_taxonomy'],
+    ['find-key-moments', 'output_steering.topic_taxonomy'],
+  ] as Array<[RobotsWorkflow, string]>)(
+    'always sends allow_other with %s %s, because the API rejects the object without it',
+    (key, name) => {
+      const field = taxonomyField(key, name);
+      const rows = [{ label: 'Tutorial', description: '', aliases: '' }];
+      // The editor who touches nothing but the list still gets a boolean out.
+      const untouched = toApiParamValue(field, value({ values: rows })) as Record<string, unknown>;
+      expect(untouched).toEqual({ values: [{ label: 'Tutorial' }], allow_other: true });
+      expect(toApiParamValue(field, value({ allowOther: false, values: rows }))).toMatchObject({
+        allow_other: false,
+      });
+    }
+  );
 
-  it('sends allow_other as a boolean, not the string the select holds', () => {
-    const field = taxonomyField('find-scenes', 'output_steering.topic_taxonomy');
-    const rows = [{ label: 'Demo', description: '', aliases: '' }];
-    expect(toApiParamValue(field, value({ allowOther: 'true', values: rows }))).toMatchObject({
-      allow_other: true,
-    });
-    expect(toApiParamValue(field, value({ allowOther: 'false', values: rows }))).toMatchObject({
-      allow_other: false,
-    });
+  it('defaults allow_other to true, so adding a vocabulary does not silently filter the output', () => {
+    // `false` is documented on `summarize` as a hard filter — "generated tags are filtered to
+    // taxonomy labels and aliases". Defaulting to it would discard model output nobody asked to
+    // discard, on a control the editor never touched.
+    expect(emptyTaxonomyValue().allowOther).toBe(true);
+    const field = taxonomyField('summarize', 'output_steering.tag_taxonomy');
+    const rows = [{ label: 'Tutorial', description: '', aliases: '' }];
+    // A stored value from before this was a checkbox reads as `true` rather than as a string.
+    expect(
+      toApiParamValue(field, { name: '', allowOther: '', values: rows } as unknown)
+    ).toMatchObject({ allow_other: true });
   });
 
   it('drops rows with no label, and the whole object when none is left', () => {
@@ -1163,23 +1252,25 @@ describe('controlled vocabularies', () => {
           ],
         })
       )
-    ).toEqual({ values: [{ label: 'Demo' }] });
+    ).toEqual({ values: [{ label: 'Demo' }], allow_other: true });
   });
 
   it('says so rather than silently dropping a taxonomy with no values in it', () => {
-    // A name and an `allow_other` with nothing to apply them to is a list that is not there —
-    // and dropping the editor's typing without a word is the failure this file keeps undoing.
+    // A name with nothing to apply it to is a list that is not there — and dropping the editor's
+    // typing without a word is the failure this file keeps undoing.
     const definition = ROBOTS_CATALOG_BY_KEY.summarize;
     expect(
       validateParams(definition, {
         'output_steering.tag_taxonomy': value({ name: 'Content pillars' }),
       })
-    ).toContain('Tag taxonomy: add at least one value, or clear the rest of the taxonomy.');
+    ).toContain('Tag taxonomy: add at least one value, or clear the taxonomy name.');
+    // `allow_other` no longer signals intent on its own: as a boolean it always holds a value, so
+    // an untouched taxonomy and one whose checkbox was cleared are both "nothing to send".
     expect(
       validateParams(definition, {
-        'output_steering.tag_taxonomy': value({ allowOther: 'false' }),
+        'output_steering.tag_taxonomy': value({ allowOther: false }),
       })
-    ).toContain('Tag taxonomy: add at least one value, or clear the rest of the taxonomy.');
+    ).toEqual([]);
     // An untouched field is not an error.
     expect(
       validateParams(definition, { 'output_steering.tag_taxonomy': emptyTaxonomyValue() })

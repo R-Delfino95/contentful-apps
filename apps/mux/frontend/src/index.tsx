@@ -57,6 +57,7 @@ import {
 } from './util/muxApi';
 import Sidebar from './locations/Sidebar';
 import { deriveFieldVersion } from './util/muxFieldVersion';
+import { currentPlaybackPolicy, hasAnyPlaybackId } from './util/playbackPolicy';
 import { unfinishedJobRecords } from './util/robots';
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -1042,14 +1043,10 @@ export class App extends React.Component<AppProps, AppState> {
       // The player vanishing mid-session needs saying out loud. A `moderate` run started from the
       // Robots tab can delete every playback ID, and the poll picks that up silently — the notice
       // in the editor explains the end state, but only a toast connects it to what just happened.
-      const hadPlaybackId = !!(
-        currentValue.playbackId ||
-        currentValue.signedPlaybackId ||
-        currentValue.drmPlaybackId
-      );
+      const hadPlaybackId = hasAnyPlaybackId(currentValue);
       if (hadPlaybackId && !nextPlayerPlaybackId) {
         this.props.sdk.notifier.warning(
-          'This video no longer has any playback IDs, so it cannot be played. Add one in Mux and resync.'
+          'This video no longer has any playback IDs, so it cannot be played. Request a new one in the Playback tab, or add one in Mux and resync.'
         );
       }
 
@@ -1339,17 +1336,11 @@ export class App extends React.Component<AppProps, AppState> {
         update: currentValue.pendingActions?.update ?? [],
       };
 
-      // Determine current policy considering pending actions
-      const playbackCreateAction = currentValue.pendingActions?.create?.find(
-        (action) => action.type === 'playback'
-      );
-      const currentPolicy: PolicyType = playbackCreateAction
-        ? (playbackCreateAction.data?.policy as PolicyType)
-        : currentValue.drmPlaybackId
-        ? 'drm'
-        : currentValue.signedPlaybackId && !currentValue.playbackId
-        ? 'signed'
-        : 'public';
+      // `undefined` when the asset has no playback ID and none is queued, which is the whole
+      // point: this used to read "public" in that state, so requesting a public playback ID on an
+      // asset that had lost all of them was silently dropped as "already public". Shared with
+      // `PlaybackSwitcher` so the click and the radio can never disagree about what is current.
+      const currentPolicy = currentPlaybackPolicy(currentValue);
 
       if (policy === currentPolicy) return currentValue;
 
@@ -1626,11 +1617,7 @@ export class App extends React.Component<AppProps, AppState> {
     if (this.state.value && this.state.value.assetId) {
       const { muxDomain } = this.props.sdk.parameters.installation as InstallationParams;
 
-      const hasPlaybackId = !!(
-        this.state.value.playbackId ||
-        this.state.value.signedPlaybackId ||
-        this.state.value.drmPlaybackId
-      );
+      const hasPlaybackId = hasAnyPlaybackId(this.state.value);
 
       const showPlayer = this.isPlayerReady();
 
@@ -1747,8 +1734,9 @@ export class App extends React.Component<AppProps, AppState> {
                     <span>
                       This video has no playback IDs, so it cannot be played or embedded. The asset
                       and everything recorded against it are still here. Playback IDs can be removed
-                      in the Mux dashboard, or by a Robots moderation directive configured to delete
-                      them. Add one in Mux and resync, or use the Playback tab to request a new one.
+                      in the Mux dashboard, or by a Robots moderation run set to delete them when
+                      content is flagged. Request a new one in the Playback tab and publish, or add
+                      one in Mux and resync.
                     </span>
                     <Button
                       variant="secondary"
@@ -1944,8 +1932,8 @@ export class App extends React.Component<AppProps, AppState> {
                     // `player.mux.com/` — copyable, and broken wherever it is pasted.
                     <Box marginBottom="spacingM" marginTop="spacingM">
                       <Note variant="warning" data-testid="playercode-noplaybackid">
-                        There is no playback ID to build player code from. Add one in Mux, or
-                        request one in the Playback tab, then resync.
+                        There is no playback ID to build player code from. Request one in the
+                        Playback tab and publish, or add one in Mux and resync.
                       </Note>
                     </Box>
                   ) : (

@@ -686,6 +686,108 @@ describe('switching playback policy on an asset with no playback IDs', () => {
       { type: 'playback', data: { policy: 'signed', assetId: 'asset-test-123' }, retry: 0 },
     ]);
   });
+
+  it('queues a public create too, instead of reading "nothing" as "already public"', async () => {
+    // The gap this closes: `currentPolicy` fell through to `'public'` when the asset had no
+    // playback ID at all, so asking for the one policy every account can create was dropped as a
+    // no-op — and the Playback tab was the affordance the "no playback IDs" notice pointed at.
+    let stored: any = { version: 5, assetId: 'asset-test-123', ready: true };
+    const ref = React.createRef<App>();
+    render(
+      <App
+        ref={ref}
+        sdk={
+          {
+            ...SDK_MOCK,
+            field: {
+              ...SDK_MOCK.field,
+              getValue: () => stored,
+              setValue: (next: any) => {
+                stored = next;
+                return Promise.resolve();
+              },
+            },
+          } as any
+        }
+      />
+    );
+
+    await (ref.current as App).swapPlaybackIDs('public');
+
+    expect(stored.pendingActions.delete).toEqual([]);
+    expect(stored.pendingActions.create).toEqual([
+      { type: 'playback', data: { policy: 'public', assetId: 'asset-test-123' }, retry: 0 },
+    ]);
+  });
+
+  it('always queues a policy, so the publish function never has to guess one', async () => {
+    // The create-side twin of the delete-with-no-`id` bug: `onPublish` POSTs `{ policy }`, and an
+    // action with none would hand Mux an empty body on an asset whose playback was just deleted.
+    let stored: any = { version: 5, assetId: 'asset-test-123', ready: true };
+    const ref = React.createRef<App>();
+    render(
+      <App
+        ref={ref}
+        sdk={
+          {
+            ...SDK_MOCK,
+            field: {
+              ...SDK_MOCK.field,
+              getValue: () => stored,
+              setValue: (next: any) => {
+                stored = next;
+                return Promise.resolve();
+              },
+            },
+          } as any
+        }
+      />
+    );
+
+    for (const policy of ['public', 'signed', 'drm'] as const) {
+      await (ref.current as App).swapPlaybackIDs(policy);
+      for (const action of stored.pendingActions.create) {
+        expect(action.data?.policy).toBeTruthy();
+      }
+    }
+  });
+
+  it('still treats a repeat of the queued policy as a no-op', async () => {
+    // Once a create is queued the asset is "on" that policy for the tab's purposes, so clicking
+    // the same radio again must not stack a second create onto the same publish.
+    let stored: any = {
+      version: 5,
+      assetId: 'asset-test-123',
+      ready: true,
+      pendingActions: {
+        delete: [],
+        create: [{ type: 'playback', data: { policy: 'public', assetId: 'asset-test-123' }, retry: 0 }],
+        update: [],
+      },
+    };
+    const setValue = vi.fn((next: any) => {
+      stored = next;
+      return Promise.resolve();
+    });
+    const ref = React.createRef<App>();
+    render(
+      <App
+        ref={ref}
+        sdk={
+          {
+            ...SDK_MOCK,
+            field: { ...SDK_MOCK.field, getValue: () => stored, setValue },
+          } as any
+        }
+      />
+    );
+    setValue.mockClear();
+
+    await (ref.current as App).swapPlaybackIDs('public');
+
+    expect(setValue).not.toHaveBeenCalled();
+    expect(stored.pendingActions.create).toHaveLength(1);
+  });
 });
 
 describe('pasting a Mux asset ID over a field that already holds one', () => {

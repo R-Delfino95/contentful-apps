@@ -34,6 +34,13 @@ to try — destroys `robotsJobs`, `robotsOutputs` and `captions`. The one visibl
 exactly the data that cannot be recovered. And a moderation directive is the *most likely* way to
 arrive here, so the entries most exposed are the ones with Robots records on them.
 
+> **Amended 2026-09-17.** The asset-ID form is no longer the only affordance left: the Playback tab
+> can request a new playback ID, queued as a `pendingActions` create and applied on publish
+> (ADR-0015). The notice and the mid-session toast name it. This ADR's decision is unchanged — the
+> editor still keys off `assetId` and playability is still a property of the asset — and so is the
+> rejection below of a poll that re-creates a playback ID by itself. What is new is that a person
+> can ask for one, which is also why `moderate`'s `on_flagged.action` is now offered (ADR-0014).
+
 **A write could be reported as successful when it never happened.** Two independent windows:
 
 1. The publish gate (ADR-0002) parks browser writes for up to 90 seconds while `onPublish`
@@ -56,7 +63,8 @@ Alternatives considered:
   means every future feature has to be added to both.
 - **Have the asset poll re-create a playback ID when it finds none.** Rejected outright: the app
   would be undoing a moderation decision automatically, which is the opposite of what
-  `delete_playback_ids` is for.
+  `delete_playback_ids` is for. *(Still rejected as of 2026-09-17. ADR-0015 adds a button, not a
+  poll — the word doing the work here is "automatically".)*
 - **Make `addVideoByInput` merge instead of replace.** Rejected: pasting a *different* asset ID
   must discard the old asset's mirror, and merging two assets' data into one value is worse than
   either replacing or refusing. A confirm keeps the semantics and removes the silence.

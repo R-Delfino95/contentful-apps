@@ -17,6 +17,7 @@ import {
   ROBOTS_CATALOG,
   ROBOTS_CATALOG_BY_KEY,
   ROBOTS_CATEGORIES,
+  confirmWarnings,
   defaultParamValues,
   paramsFromFormValues,
   validateParams,
@@ -88,6 +89,13 @@ const RobotsRunModal: FC<RobotsRunModalProps> = ({
     [definition, values, context]
   );
 
+  // What the editor is about to arm, as opposed to what the workflow always does. `notes` are the
+  // second; these are keyed on the value they warn about.
+  const warnings = useMemo(
+    () => confirmWarnings(definition, values, context),
+    [definition, values, context]
+  );
+
   const handleChange = (name: string, value: unknown) => {
     setValues((previous) => ({ ...previous, [name]: value }));
   };
@@ -138,6 +146,17 @@ const RobotsRunModal: FC<RobotsRunModalProps> = ({
                 {(definition.notes ?? []).map((note) => (
                   <Box key={note} marginTop="spacingS">
                     <Note variant="warning">{note}</Note>
+                  </Box>
+                ))}
+                {/* Last, and `negative` rather than `warning`: these are the consequences of what
+                    the editor chose on the previous screen, and the reason the confirm step is
+                    worth more than a checkbox. Below the pricing line so the run's cost and its
+                    damage are read together. */}
+                {warnings.map((warning) => (
+                  <Box key={warning.title} marginTop="spacingS">
+                    <Note variant="negative" title={warning.title} data-testid="robots-confirm-warning">
+                      {warning.body}
+                    </Note>
                   </Box>
                 ))}
               </>

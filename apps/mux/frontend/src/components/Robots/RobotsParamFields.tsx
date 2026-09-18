@@ -557,23 +557,20 @@ const TaxonomyInput: FC<{
         )}
       </Box>
 
-      <FormControl id={`robots-param-${field.name}-allow-other`} marginBottom="none">
-        <FormControl.Label>Values outside this list</FormControl.Label>
-        {/* `''` is not an API value: the reference documents no default for `allow_other`, so
-            "No preference" leaves it out rather than deciding it for every run. */}
-        <Select
-          value={taxonomy.allowOther}
+      {/* A checkbox rather than a select with a "No preference" member: the API rejects the
+          taxonomy object unless `allow_other` is a boolean, so there is no third outcome to
+          offer. Checked by default — see `TaxonomyValue`. */}
+      <Box marginBottom="none">
+        <Checkbox
+          id={`robots-param-${field.name}-allow-other`}
+          isChecked={taxonomy.allowOther}
+          helpText="Clear this to restrict the output to the values above and their aliases."
           onChange={(event) =>
-            patch({
-              allowOther: (event.target as HTMLSelectElement)
-                .value as typeof taxonomy.allowOther,
-            })
+            patch({ allowOther: (event.target as HTMLInputElement).checked })
           }>
-          <Select.Option value="">No preference</Select.Option>
-          <Select.Option value="true">Allowed</Select.Option>
-          <Select.Option value="false">Not allowed</Select.Option>
-        </Select>
-      </FormControl>
+          Allow values outside this list
+        </Checkbox>
+      </Box>
     </>
   );
 };
