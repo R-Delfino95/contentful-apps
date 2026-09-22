@@ -7,7 +7,11 @@ import { FieldExtensionSDK } from '@contentful/app-sdk';
 import RobotsPanel from './RobotsPanel';
 import RobotsErrorBoundary from './RobotsErrorBoundary';
 import { MuxApiError } from '../../util/muxApi';
-import { ROBOTS_POLL_INTERVAL_MS, resetRobotsCapabilityCache } from '../../util/robots';
+import {
+  ROBOTS_POLL_INTERVAL_MS,
+  ROBOTS_UNCONFIRMED_RECHECK_TICKS,
+  resetRobotsCapabilityCache,
+} from '../../util/robots';
 import { MuxContentfulObject } from '../../util/types';
 
 /**
@@ -122,6 +126,23 @@ describe('RobotsPanel capability states', () => {
 
     await waitFor(() => expect(screen.getByTestId('robots-units-exhausted')).toBeInTheDocument());
     expect(screen.getByText(/100,000 AI units a month/)).toBeInTheDocument();
+  });
+
+  it('remembers an unavailable answer for the session, so the next entry does not re-ask', async () => {
+    // The session cache used to be filled by a dedicated probe that short-circuited the whole
+    // load. With the probe gone, the read that fills it is the panel's own — and the *second*
+    // entry opened in the same tab still has to cost nothing. An account does not acquire the
+    // `robots:*` scope between two entries.
+    const first = apiThatFailsWith(new MuxApiError('Forbidden', 403));
+    const { unmount } = renderPanel({ muxApi: first });
+    await waitFor(() => expect(screen.getByTestId('robots-not-enabled')).toBeInTheDocument());
+    unmount();
+
+    const second = apiThatFailsWith(new MuxApiError('Forbidden', 403));
+    renderPanel({ muxApi: second });
+
+    expect(screen.getByTestId('robots-not-enabled')).toBeInTheDocument();
+    await waitFor(() => expect(second.listRobotsJobs).not.toHaveBeenCalled());
   });
 
   it('no video yet: asks for one rather than calling Mux', async () => {
@@ -1786,8 +1807,8 @@ describe('RobotsPanel — opening a job the moment it finishes', () => {
 
   const raceApi = (workflow: string, outputs: Record<string, unknown>) => {
     const created = nowSeconds();
-    // Flipped by the test, not counted off the call log: `resolveRobotsCapability` lists once
-    // before the panel's own first read, so counting calls finishes the job a tick too early.
+    // Flipped by the test rather than counted off the call log, so the job finishes when this
+    // test says it does and not on whichever read happens to be the nth.
     let watchedStatus = 'processing';
     /** Resolvers for each `getRobotsJob`, so the panel's read and the viewer's can be ordered by hand. */
     const detailReads: Array<(value: unknown) => void> = [];
@@ -1976,9 +1997,10 @@ describe('RobotsPanel concurrency', () => {
     const muxApi = {
       listRobotsJobs: vi.fn(() => {
         listCalls.push(Date.now());
-        // `resolveRobotsCapability` probes with this same call, so the first two have to settle
-        // before the tab renders at all; only a later poll tick blocks.
-        if (listCalls.length <= 2) return Promise.resolve({ data: [runningJob()] });
+        // The first read is the one that paints the tab — and it is also the capability check,
+        // which is why there is no probe in front of it to account for. Only a later poll tick
+        // blocks.
+        if (listCalls.length <= 1) return Promise.resolve({ data: [runningJob()] });
         return new Promise((resolve) => {
           releaseList = resolve;
         });
@@ -1999,7 +2021,7 @@ describe('RobotsPanel concurrency', () => {
       await act(async () => {
         await vi.advanceTimersByTimeAsync(ROBOTS_POLL_INTERVAL_MS + 100);
       });
-      expect(muxApi.listRobotsJobs).toHaveBeenCalledTimes(3);
+      expect(muxApi.listRobotsJobs).toHaveBeenCalledTimes(2);
 
       // The editor presses Refresh while that tick is still in flight. Dropping it silently is
       // the bug: no spinner, no data, nothing.
@@ -2013,7 +2035,7 @@ describe('RobotsPanel concurrency', () => {
         await vi.advanceTimersByTimeAsync(50);
       });
 
-      expect(muxApi.listRobotsJobs.mock.calls.length).toBeGreaterThanOrEqual(4);
+      expect(muxApi.listRobotsJobs.mock.calls.length).toBeGreaterThanOrEqual(3);
     } finally {
       vi.useRealTimers();
     }
@@ -2169,5 +2191,544 @@ describe('RobotsPanel — resuming a job without opening the tab', () => {
     // A job Mux purged, or a session that died mid-run, must not make every open of this entry
     // fetch forever.
     expect(muxApi.listRobotsJobs).not.toHaveBeenCalled();
+  });
+});
+
+describe('RobotsPanel — when the asset goes away', () => {
+  beforeEach(() => {
+    resetRobotsCapabilityCache();
+    vi.clearAllMocks();
+  });
+
+  const runningJob = () => ({
+    id: 'rjob_running',
+    workflow: 'summarize',
+    status: 'processing',
+    created_at: Math.floor(Date.now() / 1000),
+  });
+
+  it('holds nothing once the asset is gone, so nothing survives to be polled or written', async () => {
+    const muxApi = apiThatReturns([runningJob()]);
+    const updateField = vi.fn(async () => undefined);
+    const { rerender } = render(
+      <RobotsPanel
+        sdk={sdk}
+        muxApi={muxApi as never}
+        value={value()}
+        isActive
+        updateField={updateField}
+        resync={vi.fn(async () => undefined)}
+        defaultDirectiveIds={[]}
+      />
+    );
+    await waitFor(() => expect(screen.getByTestId('robots_job_table')).toBeInTheDocument());
+
+    // The asset is deleted and the publish function clears the field.
+    rerender(
+      <RobotsPanel
+        sdk={sdk}
+        muxApi={muxApi as never}
+        value={undefined}
+        isActive
+        updateField={updateField}
+        resync={vi.fn(async () => undefined)}
+        defaultDirectiveIds={[]}
+      />
+    );
+
+    expect(screen.getByText('Add a video before running Robots workflows.')).toBeInTheDocument();
+    // Not merely hidden: the job table is gone, which is the only observable proof that the
+    // component holding the list, the detail cache and the poll timer is gone with it.
+    expect(screen.queryByTestId('robots_job_table')).not.toBeInTheDocument();
+  });
+
+  it('never writes one asset\'s jobs onto another asset\'s entry', async () => {
+    // The reachable version of the leak: pasting a different Mux asset ID replaces the whole
+    // value without unmounting this panel. The old asset's jobs carry a scope-matching
+    // passthrough, so nothing downstream would have refused them.
+    const ourJob = {
+      id: 'rjob_old',
+      workflow: 'summarize',
+      status: 'completed',
+      created_at: Math.floor(Date.now() / 1000),
+      passthrough: ourPassthrough(),
+    };
+    const muxApi = {
+      listRobotsJobs: vi.fn(async (query: { asset_id?: string }) =>
+        query.asset_id === 'asset-1' ? { data: [ourJob] } : { data: [] }
+      ),
+      getRobotsJob: vi.fn(async () => ({ data: ourJob })),
+      listRobotsDirectives: vi.fn(async () => ({ data: [] })),
+      listRobotsDirectiveRuns: vi.fn(async () => ({ data: [] })),
+    };
+    const updateField = vi.fn(async () => undefined);
+    const props = (assetId: string) => ({
+      sdk,
+      muxApi: muxApi as never,
+      value: { assetId } as MuxContentfulObject,
+      isActive: true,
+      updateField,
+      resync: vi.fn(async () => undefined),
+      defaultDirectiveIds: [],
+    });
+
+    const { rerender } = render(<RobotsPanel {...props('asset-1')} />);
+    await waitFor(() => expect(muxApi.getRobotsJob).toHaveBeenCalled());
+
+    updateField.mockClear();
+    const swapped = { assetId: 'asset-2' } as MuxContentfulObject;
+    rerender(<RobotsPanel {...props('asset-2')} />);
+    await waitFor(() =>
+      expect(muxApi.listRobotsJobs).toHaveBeenCalledWith(
+        expect.objectContaining({ asset_id: 'asset-2' })
+      )
+    );
+
+    // Every mutator queued after the swap, applied to the new asset's value, must be a no-op.
+    const queued = updateField.mock.calls as unknown as Array<[(v: unknown) => unknown]>;
+    for (const [mutate] of queued) {
+      expect(mutate(swapped)).toBe(swapped);
+    }
+  });
+});
+
+describe('RobotsPanel — what the first open costs', () => {
+  beforeEach(() => {
+    resetRobotsCapabilityCache();
+    vi.clearAllMocks();
+  });
+
+  const jobRow = () => ({
+    id: 'rjob_1',
+    workflow: 'summarize',
+    status: 'completed',
+    created_at: Math.floor(Date.now() / 1000),
+  });
+
+  /**
+   * Every call here is an app-action round trip — two CMA requests, against a function that may
+   * cold-start — so the number of them, and how many are serialized, is the whole of how this tab
+   * feels on first open. These are the figures, pinned.
+   */
+  it('reads the job list once, not twice, because the list is the capability check', async () => {
+    const muxApi = apiThatReturns([jobRow()]);
+    renderPanel({ muxApi });
+
+    await waitFor(() => expect(screen.getByTestId('robots_job_table')).toBeInTheDocument());
+    // Was two: a `listRobotsJobs({ limit: 1 })` probe, awaited, then the real read.
+    expect(muxApi.listRobotsJobs).toHaveBeenCalledTimes(1);
+    expect(muxApi.listRobotsJobs).toHaveBeenCalledWith({ asset_id: 'asset-1', limit: 100 });
+  });
+
+  it('does not wait for the directive list before showing the jobs', async () => {
+    let releaseDirectives: (value: unknown) => void = () => undefined;
+    const muxApi = {
+      ...apiThatReturns([jobRow()]),
+      listRobotsDirectives: vi.fn(
+        () =>
+          new Promise((resolve) => {
+            releaseDirectives = resolve;
+          })
+      ),
+    };
+    renderPanel({ muxApi });
+
+    // The names are cosmetic, so a slow — or cold-starting — directive list must not be in front
+    // of the table the editor opened the tab for.
+    await waitFor(() => expect(screen.getByTestId('robots_job_table')).toBeInTheDocument());
+    releaseDirectives({ data: [] });
+  });
+
+  it('reads runs for the configured directives only, not for every directive in the account', async () => {
+    // The listing exists to label the picker. Polling the runs of all fifty directives in an
+    // account, one app-action round trip each, to find the one that touched this asset is what
+    // it used to cost — and the runs endpoint cannot filter by asset, so the only lever is
+    // asking fewer directives.
+    //
+    // The names are released only after the first run-read pass has finished, which is both the
+    // realistic ordering — the directive list is the slower, later read — and the one that
+    // actually exercises the widening. Released early it collides with the pass already in
+    // flight and `isLoadingRef` drops it, so the old code looked correct for timing reasons
+    // rather than for the right reason.
+    let releaseDirectives: (value: unknown) => void = () => undefined;
+    const muxApi = {
+      ...apiThatReturns([jobRow()]),
+      listRobotsDirectives: vi.fn(
+        () =>
+          new Promise((resolve) => {
+            releaseDirectives = resolve;
+          })
+      ),
+      listRobotsDirectiveRuns: vi.fn(async () => ({ data: [] })),
+    };
+    renderPanel({ muxApi, defaultDirectiveIds: ['drv_configured'] });
+
+    await waitFor(() => expect(muxApi.listRobotsDirectiveRuns).toHaveBeenCalled());
+    await waitFor(() => expect(screen.getByTestId('robots_job_table')).toBeInTheDocument());
+
+    releaseDirectives({
+      data: Array.from({ length: 50 }, (_, index) => ({
+        id: `drv_${index}`,
+        name: `Directive ${index}`,
+      })),
+    });
+    await waitFor(() => expect(screen.getByText('Directive 0')).toBeInTheDocument());
+    // Settle every effect the names could have re-armed before counting.
+    for (let turn = 0; turn < 5; turn += 1) {
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      });
+    }
+
+    const runReads = muxApi.listRobotsDirectiveRuns.mock.calls as unknown as Array<[string]>;
+    expect(runReads.length).toBeGreaterThan(0);
+    for (const [directiveId] of runReads) {
+      expect(directiveId).toBe('drv_configured');
+    }
+  });
+
+  it('still polls a directive the entry records but the config has since dropped', async () => {
+    const muxApi = {
+      ...apiThatReturns([]),
+      listRobotsDirectiveRuns: vi.fn(async () => ({ data: [] })),
+    };
+    renderPanel({
+      muxApi,
+      defaultDirectiveIds: [],
+      value: value({
+        robotsDirectiveRuns: [{ runId: 'drvrun_1', directiveId: 'drv_removed' }],
+      } as Partial<MuxContentfulObject>),
+    });
+
+    await waitFor(() =>
+      expect(muxApi.listRobotsDirectiveRuns).toHaveBeenCalledWith('drv_removed', { limit: 25 })
+    );
+  });
+});
+
+describe('RobotsPanel — an unconfirmed create does not block every workflow forever', () => {
+  beforeEach(() => {
+    resetRobotsCapabilityCache();
+    vi.clearAllMocks();
+  });
+
+  /**
+   * The client report behind this: `generate-premium-captions` completed, and afterwards
+   * `edit-captions` and `generate-chapters` could not be run. `runDisabledReason` is not
+   * per-workflow — an unresolved create disables **Run a workflow** outright, for every workflow
+   * in the catalog — and its only automatic exit is the per-refresh re-check, which is keyed on
+   * `pollNonce`. `pollNonce` only advances when the poll loop calls `refresh`, and the loop used
+   * to arm only on work in flight. An unconfirmed create is exactly the case with nothing in
+   * flight, so the re-check ran once, found a job Mux had not listed yet, and never ran again.
+   */
+  const created = () => Math.floor(Date.now() / 1000);
+
+  const settle = async (ms: number) => {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(ms);
+    });
+  };
+
+  /** Drives the modal all the way to a create whose outcome Mux never confirms. */
+  const startAnUnconfirmedRun = async () => {
+    await settle(50);
+    fireEvent.click(screen.getByRole('button', { name: 'Run a workflow' }));
+    await settle(10);
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    await settle(10);
+    fireEvent.click(screen.getByRole('button', { name: 'Run Summarize' }));
+    // Reconciliation sleeps between its attempts before giving up.
+    await settle(10_000);
+    expect(screen.getByText(/Mux never confirmed it/)).toBeInTheDocument();
+  };
+
+  it('keeps looking for the job with nothing in flight, and lifts the guard when it appears', async () => {
+    const passthroughs: string[] = [];
+    /** The job Mux did create, but had not listed when the create timed out. */
+    let listed: unknown[] = [];
+    const muxApi = {
+      listRobotsJobs: vi.fn(async () => ({ data: listed.map((row) => ({ ...(row as object) })) })),
+      getRobotsJob: vi.fn(async () => ({
+        data: {
+          id: 'rjob_late',
+          workflow: 'summarize',
+          status: 'completed',
+          created_at: created(),
+          passthrough: passthroughs[0],
+        },
+      })),
+      createRobotsJob: vi.fn(async (_workflow: string, _params: unknown, passthrough: string) => {
+        passthroughs.push(passthrough);
+        throw new Error('The app action response is taking longer than expected to process.');
+      }),
+      listRobotsDirectives: vi.fn(async () => ({ data: [] })),
+      listRobotsDirectiveRuns: vi.fn(async () => ({ data: [] })),
+    };
+
+    vi.useFakeTimers();
+    try {
+      renderPanel({ muxApi });
+      await startAnUnconfirmedRun();
+
+      // Nothing is in flight — the whole point. The loop has to keep ticking on the guard alone.
+      const afterCreate = muxApi.listRobotsJobs.mock.calls.length;
+      await settle(ROBOTS_POLL_INTERVAL_MS + 100);
+      expect(muxApi.listRobotsJobs.mock.calls.length).toBeGreaterThan(afterCreate);
+
+      // Mux catches up and lists it. The guard lifts without the editor touching anything, and
+      // in particular without the one button that would create a second billable job.
+      listed = [
+        { id: 'rjob_late', workflow: 'summarize', status: 'completed', created_at: created() },
+      ];
+      await settle(ROBOTS_POLL_INTERVAL_MS + 100);
+      expect(screen.queryByText(/Mux never confirmed it/)).toBeNull();
+      expect(screen.getByRole('button', { name: 'Run a workflow' })).toBeEnabled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('stops looking after a bounded number of ticks, rather than polling an open tab forever', async () => {
+    const muxApi = {
+      listRobotsJobs: vi.fn(async () => ({ data: [] })),
+      getRobotsJob: vi.fn(async () => ({ data: undefined })),
+      createRobotsJob: vi.fn(async () => {
+        throw new Error('The app action response is taking longer than expected to process.');
+      }),
+      listRobotsDirectives: vi.fn(async () => ({ data: [] })),
+      listRobotsDirectiveRuns: vi.fn(async () => ({ data: [] })),
+    };
+
+    vi.useFakeTimers();
+    try {
+      renderPanel({ muxApi });
+      await startAnUnconfirmedRun();
+
+      /** A poll tick is a plain list read; the re-check pass narrows by workflow as well. */
+      const pollTicks = () =>
+        (
+          muxApi.listRobotsJobs.mock.calls as unknown as Array<[{ workflow?: string }]>
+        ).filter(([query]) => query?.workflow === undefined).length;
+      const afterCreate = pollTicks();
+
+      for (let tick = 0; tick < ROBOTS_UNCONFIRMED_RECHECK_TICKS + 5; tick += 1) {
+        await settle(ROBOTS_POLL_INTERVAL_MS + 100);
+      }
+
+      const ticksSpent = pollTicks() - afterCreate;
+      expect(ticksSpent).toBeGreaterThan(0);
+      expect(ticksSpent).toBeLessThanOrEqual(ROBOTS_UNCONFIRMED_RECHECK_TICKS);
+      // And the guard is still up: the bound ends the looking, never the protection.
+      expect(screen.getByText(/Mux never confirmed it/)).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Run a workflow' })).toBeDisabled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('RobotsPanel — an unconfirmed directive run does not block the button forever', () => {
+  beforeEach(() => {
+    resetRobotsCapabilityCache();
+    vi.clearAllMocks();
+  });
+
+  /**
+   * The job guard's twin, and the same gap: the directive re-check is keyed on `pollNonce` too,
+   * and `pollNonce` only advances when the poll loop calls `refresh`. An unconfirmed run is
+   * precisely the state with nothing in flight, so the loop stayed quiet and **Run directive**
+   * stayed disabled until the editor reloaded or clicked the button that pays twice.
+   *
+   * Narrower blast radius than the job one — it disables the directive button alone — which is
+   * why it was left out of that fix and why it is fixed here.
+   */
+  const settle = async (ms: number) => {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(ms);
+    });
+  };
+
+  const withStoredValue = (initial: MuxContentfulObject | undefined) => {
+    let stored = initial;
+    const updateField = vi.fn(async (mutate: (current: any) => any) => {
+      stored = mutate(stored);
+    });
+    return { updateField, value: initial, read: () => stored };
+  };
+
+  /** A run that started just now, whenever "now" is — the adoption window is measured per pass. */
+  const runStartedNow = () => ({
+    run_id: 'drvrun_late',
+    subject_id: 'asset-1',
+    status: 'pending',
+    started_at: Math.floor(Date.now() / 1000),
+  });
+
+  /** A directive whose run never comes back confirmed, over a run list the test controls. */
+  const unconfirmedApi = (listRuns: () => unknown[]) => ({
+    ...apiThatReturns([]),
+    listRobotsDirectives: vi.fn(async () => ({ data: [{ id: 'drv_1', name: 'Ingest' }] })),
+    listRobotsDirectiveRuns: vi.fn(async () => ({ data: listRuns() })),
+    getRobotsDirectiveRun: vi.fn(async (_id: string, runId: string) => ({
+      data: listRuns().find((run) => (run as any).run_id === runId),
+    })),
+    createRobotsDirectiveRun: vi.fn(async () => {
+      throw new Error('The app action response is taking longer than expected to process.');
+    }),
+  });
+
+  /** Drives the picker all the way to a run whose outcome Mux never confirms. */
+  const startAnUnconfirmedDirectiveRun = async () => {
+    await settle(50);
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'drv_1' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Run directive' }));
+    // Reconciliation retries the run list three times on a short backoff before giving up.
+    await settle(10_000);
+    expect(screen.getByTestId('robots-directive-run-unconfirmed')).toBeInTheDocument();
+  };
+
+  it('keeps looking for the run with nothing in flight, and adopts it when it appears', async () => {
+    /** The run Mux did start, but had not listed when the create timed out. */
+    let listed: unknown[] = [];
+    const stored = withStoredValue(value());
+    const muxApi = unconfirmedApi(() => listed);
+
+    vi.useFakeTimers();
+    try {
+      renderPanel({
+        muxApi,
+        defaultDirectiveIds: ['drv_1'],
+        updateField: stored.updateField,
+        value: stored.value,
+      });
+      await startAnUnconfirmedDirectiveRun();
+
+      // Nothing is in flight — the whole point. The loop has to keep ticking on the guard alone.
+      const afterCreate = muxApi.listRobotsDirectiveRuns.mock.calls.length;
+      await settle(ROBOTS_POLL_INTERVAL_MS + 100);
+      expect(muxApi.listRobotsDirectiveRuns.mock.calls.length).toBeGreaterThan(afterCreate);
+
+      // Mux catches up and lists it. The guard lifts without the editor touching anything, and
+      // in particular without the one button that would start a second billable run.
+      listed = [runStartedNow()];
+      await settle(ROBOTS_POLL_INTERVAL_MS + 100);
+      expect(screen.queryByTestId('robots-directive-run-unconfirmed')).not.toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Run directive' })).toBeEnabled();
+      // Adopted the way the create path adopts: recorded on the entry, and on screen.
+      expect(stored.read()?.robotsDirectiveRuns?.[0].runId).toBe('drvrun_late');
+      expect(screen.queryByText('No directive runs for this video yet.')).toBeNull();
+      // And never retried on the app's own initiative.
+      expect(muxApi.createRobotsDirectiveRun).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('stops looking after a bounded number of ticks, and the guard survives it', async () => {
+    const muxApi = unconfirmedApi(() => []);
+
+    vi.useFakeTimers();
+    try {
+      renderPanel({ muxApi, defaultDirectiveIds: ['drv_1'] });
+      await startAnUnconfirmedDirectiveRun();
+
+      const afterGuard = muxApi.listRobotsDirectiveRuns.mock.calls.length;
+      for (let tick = 0; tick < ROBOTS_UNCONFIRMED_RECHECK_TICKS + 5; tick += 1) {
+        await settle(ROBOTS_POLL_INTERVAL_MS + 100);
+      }
+
+      const passesSpent = muxApi.listRobotsDirectiveRuns.mock.calls.length - afterGuard;
+      expect(passesSpent).toBeGreaterThan(0);
+      expect(passesSpent).toBeLessThanOrEqual(ROBOTS_UNCONFIRMED_RECHECK_TICKS);
+      // The bound ends the looking, never the protection: ADR-0003's invariant is that nothing
+      // time-based re-enables a billable Run.
+      expect(screen.getByTestId('robots-directive-run-unconfirmed')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Run directive' })).toBeDisabled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('gives a second unconfirmed run its own budget to be looked for on', async () => {
+    // The budget is per guard, not per session. Without the reset, an editor who exhausted one
+    // bound and then dismissed the guard by hand would get a second guard that never looks at
+    // all — back to the original bug, one escape-hatch click later.
+    const muxApi = unconfirmedApi(() => []);
+
+    vi.useFakeTimers();
+    try {
+      renderPanel({ muxApi, defaultDirectiveIds: ['drv_1'] });
+      await startAnUnconfirmedDirectiveRun();
+
+      for (let tick = 0; tick < ROBOTS_UNCONFIRMED_RECHECK_TICKS + 2; tick += 1) {
+        await settle(ROBOTS_POLL_INTERVAL_MS + 100);
+      }
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Nothing is running — let me try again' })
+      );
+      await settle(10);
+
+      fireEvent.click(screen.getByRole('button', { name: 'Run directive' }));
+      await settle(10_000);
+      expect(screen.getByTestId('robots-directive-run-unconfirmed')).toBeInTheDocument();
+
+      const afterSecondGuard = muxApi.listRobotsDirectiveRuns.mock.calls.length;
+      await settle(ROBOTS_POLL_INTERVAL_MS + 100);
+      expect(muxApi.listRobotsDirectiveRuns.mock.calls.length).toBeGreaterThan(afterSecondGuard);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('lifts the guard even when recording the adopted run fails', async () => {
+    // Same rule as everywhere else on this path: the run is already billing, so a failed *write*
+    // must not leave the editor stuck behind a guard on a run we have positively identified.
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    let listed: unknown[] = [];
+    const muxApi = unconfirmedApi(() => listed);
+
+    vi.useFakeTimers();
+    try {
+      renderPanel({
+        muxApi,
+        defaultDirectiveIds: ['drv_1'],
+        updateField: vi.fn(async () => {
+          throw new Error('version conflict');
+        }),
+      });
+      await startAnUnconfirmedDirectiveRun();
+
+      listed = [runStartedNow()];
+      await settle(ROBOTS_POLL_INTERVAL_MS + 100);
+      expect(screen.queryByTestId('robots-directive-run-unconfirmed')).not.toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Run directive' })).toBeEnabled();
+    } finally {
+      vi.useRealTimers();
+      consoleError.mockRestore();
+    }
+  });
+
+  it('never adopts a run with no start time, however long it keeps looking', async () => {
+    // The directive match is asset + recency, with no token to make it exact — so the one thing
+    // holding it closed is that a run without `started_at` is not a candidate. Loosening that to
+    // make the re-check succeed more often would drop the guard on a run that never started.
+    const muxApi = unconfirmedApi(() => [
+      { run_id: 'drvrun_no_start', subject_id: 'asset-1', status: 'pending' },
+    ]);
+
+    vi.useFakeTimers();
+    try {
+      renderPanel({ muxApi, defaultDirectiveIds: ['drv_1'] });
+      await startAnUnconfirmedDirectiveRun();
+
+      for (let tick = 0; tick < ROBOTS_UNCONFIRMED_RECHECK_TICKS + 2; tick += 1) {
+        await settle(ROBOTS_POLL_INTERVAL_MS + 100);
+      }
+
+      expect(screen.getByTestId('robots-directive-run-unconfirmed')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Run directive' })).toBeDisabled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

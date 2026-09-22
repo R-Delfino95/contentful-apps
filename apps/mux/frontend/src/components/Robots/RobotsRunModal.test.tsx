@@ -94,10 +94,40 @@ describe('RobotsRunModal form widgets', () => {
     await pick('edit-captions');
 
     expect(await screen.findByText(/Add at least one replacement rule/)).toBeInTheDocument();
+    // And Continue is disabled, not merely inert. It used to look available and silently do
+    // nothing, which reads as a broken button rather than as a reason to scroll up.
+    expect(screen.getByRole('button', { name: 'Continue' })).toBeDisabled();
     await userEvent.click(screen.getByRole('button', { name: 'Continue' }));
     // Still on the form: Continue did not advance to the confirm step.
     expect(screen.queryByText(/consume Mux AI units/)).not.toBeInTheDocument();
     expect(screen.getByText(/Add at least one replacement rule/)).toBeInTheDocument();
+  });
+
+  it('states the chapters transcript requirement on the form, and blocks Continue', async () => {
+    // Reported: the editor found out a chapters run needed a transcript only when the job
+    // failed. Same mechanism `find-key-moments` already used — a precondition checked against
+    // the asset context, surfaced before Continue rather than after it.
+    render(
+      <RobotsRunModal
+        isShown
+        onClose={vi.fn()}
+        onRun={vi.fn(async () => undefined)}
+        assetId="asset-1"
+        captions={[]}
+        audioTracks={[]}
+        isRunDisabled={false}
+        initialWorkflow="generate-chapters"
+      />
+    );
+
+    expect(await screen.findByText(/no caption track/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Continue' })).toBeDisabled();
+  });
+
+  it('lets a chapters run through once the video has captions', async () => {
+    renderModal({ initialWorkflow: 'generate-chapters' });
+    expect(screen.queryByText(/no caption track/)).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Continue' })).toBeEnabled();
   });
 
   /**

@@ -20,9 +20,10 @@ import {
   mergeJobRecords,
   mergeRobotsOutputs,
   parseJobPassthrough,
+  cachedRobotsCapability,
+  recordRobotsCapability,
   recordRobotsDirectiveRun,
   resetRobotsCapabilityCache,
-  resolveRobotsCapability,
 } from './robots';
 import { RobotsDirectiveRun, RobotsJob } from './robotsTypes';
 import { MuxContentfulObject } from './types';
@@ -181,36 +182,23 @@ describe('capabilityFromError', () => {
   });
 });
 
-describe('resolveRobotsCapability', () => {
+describe('the session capability cache', () => {
   beforeEach(() => resetRobotsCapabilityCache());
 
-  it('resolves enabled from a successful list call', async () => {
-    const muxApi = { listRobotsJobs: vi.fn(async () => ({ data: [] })) };
-    expect(await resolveRobotsCapability(muxApi as never)).toEqual({ state: 'enabled' });
+  // There is no resolver any more: the panel's own job list answers the question, and this cache
+  // is what stops the *next* entry in the same tab re-asking. See `recordRobotsCapability`.
+  it('starts empty, so the first entry of a session reads for itself', () => {
+    expect(cachedRobotsCapability()).toBeUndefined();
   });
 
-  it('caches the answer, so opening ten entries costs one call', async () => {
-    const listRobotsJobs = vi.fn(async () => ({ data: [] }));
-    const muxApi = { listRobotsJobs } as never;
-
-    await resolveRobotsCapability(muxApi);
-    await resolveRobotsCapability(muxApi);
-    await resolveRobotsCapability(muxApi);
-
-    expect(listRobotsJobs).toHaveBeenCalledTimes(1);
+  it('remembers what a read reported, so opening ten entries costs one answer', () => {
+    recordRobotsCapability({ state: 'enabled' });
+    expect(cachedRobotsCapability()).toEqual({ state: 'enabled' });
   });
 
-  it('caches a negative answer too', async () => {
-    const listRobotsJobs = vi.fn(async () => {
-      throw new MuxApiError('Not enabled', 403);
-    });
-
-    const first = await resolveRobotsCapability({ listRobotsJobs } as never);
-    const second = await resolveRobotsCapability({ listRobotsJobs } as never);
-
-    expect(first.state).toBe('not-enabled');
-    expect(second).toBe(first);
-    expect(listRobotsJobs).toHaveBeenCalledTimes(1);
+  it('remembers a negative answer too', () => {
+    recordRobotsCapability(capabilityFromError(new MuxApiError('Not enabled', 403)));
+    expect(cachedRobotsCapability()?.state).toBe('not-enabled');
   });
 });
 

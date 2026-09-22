@@ -157,3 +157,57 @@ control. Hiding a usable control on missing information is the worse of the two 
 - `edit-captions`' `delete_original_track` got the same treatment as `replace_existing` despite a
   weaker rule — "has effect only when" is an ignore, not a rejection. Nothing was broken; a
   checkbox that provably does nothing is still worth removing.
+
+## Amendment, 2026-09-21: chapters has the same prerequisite, and Continue now says so
+
+The Decision above is about requests Mux documents as *invalid*, made unconstructable through
+`showWhen`. This is the other half of the same problem and it needs the other mechanism: a
+request that is perfectly well-formed and that this asset cannot satisfy.
+
+`find-key-moments` has had that treatment since it was written — without `use_shots` the
+selection reads the transcript, so the asset needs a caption track, and `validateParams` says so
+against `RobotsAssetContext.hasCaptions` before Continue. `generate-chapters` has the identical
+prerequisite and had none of it. Its own `language_code` is labelled "Caption track language",
+which is this catalog saying the workflow picks a caption track; with no track there is nothing
+to chapter, the POST is accepted, and the job errors minutes later — after the editor has been
+told the run started and after they have been charged for finding out. It is the worst shape of
+failure and it was one `if` away from the shape we already had.
+
+So `generate-chapters` is gated on `hasCaptions === false`, with a message that does not offer
+visual evidence as the way out, because chapters has no `use_shots`.
+
+**Three other workflows were checked and deliberately left alone.** `summarize`, `ask-questions`
+and `find-scenes` carry the same "Caption track language" / "Transcript language" label and no
+more. A label is not a documented prerequisite, and this catalog's standing rule is that a
+restriction we invent blocks a run Mux accepts — the same class of mistake as inventing a
+default (ADR-0011) or borrowing another workflow's caps (above). `summarize` is the flagship
+workflow and `Apply summary` depends on it; gating it on a label would be the most expensive
+possible way to be wrong. If one of them comes back with a real failure on a caption-less asset,
+that response is the evidence and the fix is this one again, one `if` at a time.
+
+Also found and not changed: `translate-audio` documents a genuine prerequisite in `notes` — "The
+run is rejected if the video has no audio track" — and nothing enforces it. Different mechanism
+(the API rejects the create synchronously, so the editor learns immediately rather than minutes
+later), different context key (`hasAudioTrack`, which does not exist), and the second half of
+that sentence is not checkable from here. Left as a documented gap.
+
+**And Continue is disabled now, not merely inert.** `handleContinue` early-returned on
+`errors.length > 0` while the button stayed enabled, so a run the form had already refused
+presented an available Continue that did nothing when pressed. That reads as a broken button,
+and the next move it invites is pressing it again rather than scrolling up to the note that says
+why. The guard in the handler stays — it is what stops a keyboard or programmatic activation
+getting past a disabled button — but the button now carries the same condition, with the first
+error as its title.
+
+### Consequences of this amendment
+
+**Positive.** The prerequisite is stated where it can still be acted on, for both workflows that
+have it, through one mechanism. A form that refuses a run looks like it refuses it.
+
+**Negative.** A chapters run on an asset whose caption track exists but is not mirrored yet is
+now blocked by us rather than by Mux. `isCaptionTrack` admits `preparing`, so the window is the
+seconds between a track being attached and the asset poll seeing it, and Refresh closes it.
+
+**Neutral.** `validateParams` is still a list of `if (definition.key === …)` blocks rather than
+anything data-driven. Three preconditions across twelve workflows does not pay for a mechanism,
+and every one of them has been a different shape so far.

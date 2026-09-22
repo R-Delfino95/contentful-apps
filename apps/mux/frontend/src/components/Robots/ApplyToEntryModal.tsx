@@ -20,6 +20,7 @@ import {
   defaultTargetFieldId,
   entryFieldOptions,
   formatFieldValue,
+  matchesGeneratedValue,
   preferredTargetFieldId,
   wouldOverwrite,
 } from '../../util/robotsEntryMapping';
@@ -275,6 +276,16 @@ const CurrentValueCell: FC<Omit<CandidateRowProps, 'onChange'>> = ({
   if (!fieldId) {
     const declined = preferredTargetFieldId(candidate);
     const declinedValue = declined ? currentFieldValue(sdk, declined, locale) : undefined;
+    // Three states, not two. A field holding exactly this generated value is not a field with
+    // something in the way — it is this row, already done, and the honest thing to say is that
+    // there is nothing to do rather than to invite the editor to overwrite it with itself.
+    if (matchesGeneratedValue(declinedValue, candidate.value)) {
+      return (
+        <Text fontColor="gray600">
+          {fieldNames[declined] ?? declined} already holds this value. Nothing to apply.
+        </Text>
+      );
+    }
     return wouldOverwrite(declinedValue) ? (
       <Text fontColor="gray600">
         {fieldNames[declined] ?? declined} already has content. Pick it as the target to replace it.
@@ -285,6 +296,11 @@ const CurrentValueCell: FC<Omit<CandidateRowProps, 'onChange'>> = ({
   }
 
   const current = currentFieldValue(sdk, fieldId, locale);
+  // The same distinction on a row the editor did pick: writing this would change nothing, so
+  // "Will be replaced" is not what is about to happen.
+  if (matchesGeneratedValue(current, candidate.value)) {
+    return <Badge variant="secondary">Already applied</Badge>;
+  }
   return wouldOverwrite(current) ? (
     <>
       <Badge variant="warning">Will be replaced</Badge>

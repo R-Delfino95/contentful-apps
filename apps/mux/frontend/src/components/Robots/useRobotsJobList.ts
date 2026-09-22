@@ -1,6 +1,10 @@
 import { useCallback, useRef, useState } from 'react';
 import { MuxApiError, MuxApiService } from '../../util/muxApi';
-import { cachedRobotsCapability, capabilityFromError } from '../../util/robots';
+import {
+  cachedRobotsCapability,
+  capabilityFromError,
+  recordRobotsCapability,
+} from '../../util/robots';
 import { RobotsCapability, RobotsJob } from '../../util/robotsTypes';
 
 /**
@@ -18,7 +22,6 @@ export interface RobotsJobListState {
   setIsLoading: React.Dispatch<React.SetStateAction<boolean>>;
   loadError?: string;
   hasLoadedOnce: boolean;
-  setHasLoadedOnce: React.Dispatch<React.SetStateAction<boolean>>;
   /**
    * Bumped after every refresh attempt, successful or not. The poll effect keys off this rather
    * than off `jobs`: a refresh that throws leaves `jobs` untouched, so keying off the data alone
@@ -37,7 +40,8 @@ export function useRobotsJobList({
   isMountedRef,
 }: {
   muxApi?: MuxApiService;
-  assetId?: string;
+  /** Required: the panel does not mount without an asset, and remounts when it changes. */
+  assetId: string;
   /** Runs inside the fetch, with the freshly read list, before it is stored. */
   onJobsFetched: (jobs: RobotsJob[]) => Promise<void> | void;
   isMountedRef: React.MutableRefObject<boolean>;
@@ -69,7 +73,7 @@ export function useRobotsJobList({
 
   const refresh = useCallback(
     async (options: { silent?: boolean } = {}) => {
-      if (!muxApi || !assetId) return;
+      if (!muxApi) return;
       if (isFetchingRef.current) {
         queuedRefreshRef.current = true;
         return;
@@ -95,12 +99,18 @@ export function useRobotsJobList({
         setCapability((previous) =>
           previous?.state === 'enabled' ? previous : { state: 'enabled' }
         );
+        // And it answers for the whole session, so the next entry opened in this tab does not
+        // spend a round trip re-asking. This read is why there is no separate probe in front of
+        // it any more.
+        recordRobotsCapability({ state: 'enabled' });
 
         await onJobsFetched(fetched);
       } catch (error) {
         if (!isMountedRef.current) return;
         if (error instanceof MuxApiError && (error.status === 401 || error.status === 403)) {
-          setCapability(capabilityFromError(error));
+          const capability = capabilityFromError(error);
+          setCapability(capability);
+          recordRobotsCapability(capability);
         } else {
           setLoadError(
             error instanceof Error ? error.message : 'Could not load Robots jobs for this video.'
@@ -139,7 +149,6 @@ export function useRobotsJobList({
     setIsLoading,
     loadError,
     hasLoadedOnce,
-    setHasLoadedOnce,
     pollNonce,
     refresh,
     addCreatedJob,

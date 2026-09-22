@@ -142,6 +142,16 @@ const PUBLISH_GATE_TIMEOUT_MS = 90_000;
 const NO_DIRECTIVE_IDS: string[] = [];
 
 /**
+ * How hard the app looks for the automation an upload attached, before leaving it to the tab.
+ *
+ * Four attempts five seconds apart, starting from the moment the asset reports `ready`. A
+ * directive dispatches its first workflow shortly after ingest, so this catches the normal case;
+ * anything slower is the Robots tab's job, which polls properly and says what it finds.
+ */
+const ROBOTS_UPLOAD_CHECK_ATTEMPTS = 4;
+const ROBOTS_UPLOAD_CHECK_INTERVAL_MS = 5000;
+
+/**
  * Which Mux tracks belong in `captions`.
  *
  * **Duplicated in `functions/src/onPublish.ts` — change one, change the other.** Separate
@@ -196,6 +206,17 @@ export class App extends React.Component<AppProps, AppState> {
   /** Tracks the last publish we reacted to, so one publish is handled once. */
   private lastHandledPublishedAt?: string;
   private isUnmounted = false;
+  /**
+   * Directives attached to an upload started in this session, and whether we have spoken about
+   * them yet.
+   *
+   * Both are instance fields rather than state because neither should ever cause a render, and
+   * because "an upload just finished here" is a fact about this session — not about the entry.
+   * Nothing derives them from the stored value, which is what keeps the toast off every
+   * subsequent open of an entry whose asset has automation on it.
+   */
+  private uploadDirectiveIds: string[] = [];
+  private hasAnnouncedRobotsOnUpload = false;
 
   constructor(props: AppProps) {
     super(props);
@@ -738,6 +759,11 @@ export class App extends React.Component<AppProps, AppState> {
   };
 
   onConfirmModal = async (options: ModalData) => {
+    // Remembered before the upload starts, because it is the only moment anything in the browser
+    // knows a directive was attached: `new_asset_settings.directives` goes out with the asset and
+    // Mux dispatches the run server-side, with nothing to observe it. See `announceRobotsActivity`.
+    this.uploadDirectiveIds = options.directiveIds ?? [];
+
     if (this.state.pendingUploadURL) {
       await addByURL({
         muxApi: this.muxApi,
@@ -1066,6 +1092,12 @@ export class App extends React.Component<AppProps, AppState> {
         await this.setSignedPlayback(drmPlayback.id, true);
       }
 
+      // The asset being ready is what "the upload finished" means to Mux, and it is when an
+      // ingest-attached directive actually starts — not when the upload's asset id appeared,
+      // which is minutes earlier for a long video. Fired here so both upload paths (direct and
+      // by URL) reach it, and not awaited: this poll drives the player and must not wait on it.
+      if (asset.status === 'ready') void this.announceRobotsActivity(currentValue.assetId);
+
       const renditionPreparing = asset.static_renditions?.files
         ? asset.static_renditions.files.find((rend) => rend.status === 'preparing')
         : false;
@@ -1090,6 +1122,67 @@ export class App extends React.Component<AppProps, AppState> {
             this.pollForAssetDetails();
           }
         });
+      }
+    }
+  };
+
+  /**
+   * Tell the editor that the directives they attached to this upload are already at work.
+   *
+   * An ingest-dispatched run is the one thing this app cannot see happen. There is no browser
+   * moment to record it — Mux creates the run server-side from `new_asset_settings` — which is
+   * the known gap in ADR-0009, and the reason the tested case was "the directive ran correctly
+   * and the editor had no idea until they happened to open the Robots tab". This does not close
+   * that gap; it points at the tab where the work is visible, at the one moment the editor is
+   * still looking at the upload they just made.
+   *
+   * Three bounds, all deliberate:
+   *
+   * - **It only runs for an upload that attached a directive**, so an install with no Robots
+   *   pays nothing and hears nothing (ADR-0006).
+   * - **It runs once per session**, from the flag above rather than from anything on the entry,
+   *   so reopening an entry whose asset has automation on it is silent.
+   * - **It gives up after `ROBOTS_UPLOAD_CHECK_ATTEMPTS`.** Polling for a run that never starts
+   *   would spend app-action round trips on an open tab indefinitely, and the Robots tab is the
+   *   place that answers the question properly. Each wait is an `await`, not a scheduled
+   *   callback, and every step re-checks `isUnmounted` — a closing tab stops here rather than
+   *   notifying into a component that is gone.
+   */
+  private announceRobotsActivity = async (assetId: string): Promise<void> => {
+    const directiveIds = this.uploadDirectiveIds;
+    if (this.hasAnnouncedRobotsOnUpload || directiveIds.length === 0 || !this.muxApi) return;
+    this.hasAnnouncedRobotsOnUpload = true;
+
+    for (let attempt = 0; attempt < ROBOTS_UPLOAD_CHECK_ATTEMPTS; attempt += 1) {
+      if (attempt > 0) await delay(ROBOTS_UPLOAD_CHECK_INTERVAL_MS);
+      if (this.isUnmounted) return;
+
+      try {
+        // Both, because a run exists before the first job it dispatches does, and a job outlives
+        // a run that has fallen out of the list window. Either one answers the question.
+        const [jobs, ...runLists] = await Promise.all([
+          this.muxApi.listRobotsJobs({ asset_id: assetId, limit: 1 }),
+          ...directiveIds.map((directiveId) =>
+            this.muxApi.listRobotsDirectiveRuns(directiveId, { limit: 25 })
+          ),
+        ]);
+        if (this.isUnmounted) return;
+
+        const hasJob = (jobs.data ?? []).length > 0;
+        const hasRun = runLists.some((list) =>
+          (list.data ?? []).some((run) => run.subject_id === assetId)
+        );
+        if (hasJob || hasRun) {
+          this.props.sdk.notifier.success(
+            'Robots is already working on this video. Open the Robots tab to follow along.'
+          );
+          return;
+        }
+      } catch (error) {
+        // Nothing here is worth an error toast: the editor did not ask for this check, and the
+        // Robots tab reports its own failures properly.
+        console.error('[robots] Could not check what is running on the new asset', error);
+        return;
       }
     }
   };
@@ -1571,6 +1664,7 @@ export class App extends React.Component<AppProps, AppState> {
         installationParams={this.props.sdk.parameters.installation as InstallationParams}
         asset={this.state.value}
         sdk={this.props.sdk}
+        muxApi={this.muxApi}
         file={this.state.file}
         pendingUploadURL={this.state.pendingUploadURL}
       />

@@ -620,14 +620,38 @@ describe('audio-only assets', () => {
     ).toEqual([]);
   });
 
-  it('blocks no run on the ten workflows whose reference pages restrict nothing', () => {
+  it('will not run generate-chapters on a video with no caption track', () => {
+    // The precondition `find-key-moments` already has, applied to the other workflow that reads
+    // the transcript and has no visual fallback. Before this the POST was accepted and the job
+    // errored minutes later, after the editor had been told it started.
+    const definition = ROBOTS_CATALOG_BY_KEY['generate-chapters'];
+    const errors = validateParams(definition, {}, { hasCaptions: false });
+    expect(errors.some((error) => /no caption track/.test(error))).toBe(true);
+    expect(errors.some((error) => /generate captions first/i.test(error))).toBe(true);
+    // And it does not offer visual evidence as the way out, because chapters has none.
+    expect(errors.some((error) => /Mux Shots/.test(error))).toBe(false);
+  });
+
+  it('runs generate-chapters once there is a caption track, or when nobody knows', () => {
+    const definition = ROBOTS_CATALOG_BY_KEY['generate-chapters'];
+    expect(validateParams(definition, {}, { hasCaptions: true })).toEqual([]);
+    // The standing rule: a caller that does not know must not have its runs blocked.
+    expect(validateParams(definition, {})).toEqual([]);
+  });
+
+  it('blocks no run on the nine workflows whose reference pages restrict nothing', () => {
     // Re-swept across all twelve reference pages. Only three mention audio-only assets at all:
     // `find-scenes` ("Audio-only assets are not supported."), `find-key-moments` (`use_shots`
     // "Not supported for audio-only assets", plus "Audio-only assets always use transcript
     // evidence and require a caption track"), and `moderate` — whose mention is about one
     // parameter being ignored, not about the run, so it hides a field rather than refusing a job.
-    // The other nine say nothing, and gating a workflow the docs never restrict costs the editor
-    // a run they are entitled to.
+    // The rest say nothing about the *asset kind*, and gating a workflow the docs never restrict
+    // costs the editor a run they are entitled to.
+    //
+    // `generate-chapters` came off this list, and only half-way: it is gated on **captions**, not
+    // on being audio-only, so an audio-only video with a caption track still runs it. That is why
+    // the fixtures below say `hasCaptions: true` — this test is about the asset *kind* and has to
+    // keep asking only that question.
     const unrestricted: RobotsWorkflow[] = [
       'generate-premium-captions',
       'edit-captions',
@@ -642,12 +666,13 @@ describe('audio-only assets', () => {
     ];
     for (const key of unrestricted) {
       const definition = ROBOTS_CATALOG_BY_KEY[key];
-      const withAudio = validateParams(
-        definition,
-        defaultParamValues(definition.params),
-        { isAudioOnly: true }
-      );
-      const without = validateParams(definition, defaultParamValues(definition.params));
+      const withAudio = validateParams(definition, defaultParamValues(definition.params), {
+        isAudioOnly: true,
+        hasCaptions: true,
+      });
+      const without = validateParams(definition, defaultParamValues(definition.params), {
+        hasCaptions: true,
+      });
       expect(withAudio).toEqual(without);
     }
   });

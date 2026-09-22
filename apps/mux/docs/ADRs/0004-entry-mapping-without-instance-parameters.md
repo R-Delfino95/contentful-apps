@@ -123,3 +123,51 @@ plain one. Someone will eventually want the split; it is a change to `richTextDo
 **Neutral.** Allowing Rich Text for `title` as well as `description` is not a recommendation to use
 it. The conversion is identical for both and a type rule that applied to one text output and not
 the other would be arbitrary, so the dialog offers it and the editor decides.
+
+## Amendment, 2026-09-21: a third state, for a value that is already there
+
+The amendment above gave the declined row a sentence: *"SEO Description already has content. Pick
+it as the target to replace it."* Review came back with a screenshot of that sentence under a
+field whose content was the generated title, applied a minute earlier, annotated "technically
+already applied?".
+
+It was. `defaultTargetFieldId` and the row message both ask `wouldOverwrite` — *is there anything
+in this field* — and neither asks whether what is in it is the thing we would write. Those are
+different questions, and only the second one distinguishes "you would be replacing the editor's
+copy" from "this row is done". Telling someone to pick a field in order to overwrite a value with
+itself is worse than saying nothing, because it reads as a warning and there is nothing to be
+warned about.
+
+So there are three states per row now, not two, keyed on a new `matchesGeneratedValue`:
+
+- the field holds **this** value — *"Title already holds this value. Nothing to apply."*, and on a
+  row the editor deliberately targets, an `Already applied` badge where `Will be replaced` used to
+  be;
+- the field holds **something else** — the existing sentence, unchanged;
+- the field is empty — unchanged.
+
+Nothing about pre-filling changes, and deliberately so. An already-applied field is still not
+pre-selected: `defaultTargetFieldId` declines it through `wouldOverwrite` exactly as before, which
+is the right outcome for the new reason as well as the old one. Selecting it would offer to do
+work there is none of.
+
+The comparison is by value, and for Rich Text through `richTextToPlainText`. That is not a
+convenience — it is the only direction that can work. `valueForField` writes a string as a
+one-paragraph document, so the document we wrote reads back as exactly the string we wrote, while
+a document the editor has since restructured does not. Tags compare element by element and in
+order; a reordered list is not the list we wrote. Both are the strict reading, and both fail
+towards "has other content", which is the state that says something rather than the state that
+says nothing.
+
+### Consequences of this amendment
+
+**Positive.** Reopening the dialog after applying reads as done rather than as a row needing
+attention, which is what the reviewer was actually asking about.
+
+**Negative.** Equality is exact, so an editor who changed one character sees "already has
+content" again. Correct, and it means the dialog cannot tell "edited" from "never applied" —
+which it never could, and which would need the applied value stored somewhere to answer.
+
+**Neutral.** `wouldOverwrite` is unchanged and still answers the question it always answered. The
+new function sits beside it rather than inside it, because the two are asked in different places
+for different reasons.

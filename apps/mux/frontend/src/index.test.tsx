@@ -5,6 +5,8 @@ import { fireEvent, render, queryByAttribute } from '@testing-library/react';
 import '@testing-library/jest-dom';
 import { App } from '.';
 import { vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { MuxContentfulObject } from './util/types';
 
 vi.mock('contentful-management', () => ({
@@ -1174,5 +1176,202 @@ describe('a video with a Robots job still running', () => {
     // A job Mux purged, or a session that died mid-run. The notice would otherwise sit on the
     // entry for the rest of its life.
     expect(dom.queryByTestId('robots-jobs-in-flight')).toBeNull();
+  });
+});
+
+/**
+ * An ingest-dispatched directive is the one piece of Robots work the browser never sees start:
+ * Mux creates the run server-side from `new_asset_settings`, so there is no creation moment to
+ * record (the known gap in ADR-0009). Tested behaviour before this: the asset uploaded, the
+ * directive ran correctly, and the editor found out only if they happened to open the Robots tab.
+ */
+describe('telling the editor that an upload already has Robots working on it', () => {
+  const buildApp = () => {
+    const stored: any = { version: 3, assetId: 'asset-test-123' };
+    const notifier = { error: vi.fn(), success: vi.fn(), warning: vi.fn() };
+    const ref = React.createRef<App>();
+    render(
+      <App
+        ref={ref}
+        sdk={
+          {
+            ...SDK_MOCK,
+            notifier,
+            field: {
+              ...SDK_MOCK.field,
+              getValue: () => stored,
+              setValue: () => Promise.resolve(),
+            },
+          } as any
+        }
+      />
+    );
+    return { app: () => ref.current as App, notifier };
+  };
+
+  const readyAsset = { id: 'asset-test-123', status: 'ready', tracks: [] };
+
+  const runPollWith = async (
+    robots: Record<string, any>,
+    directiveIds: string[] | undefined
+  ) => {
+    const { app, notifier } = buildApp();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const instance = app();
+    instance.setState({ initialResyncDone: true });
+    (instance as any).muxApi = {
+      getAsset: vi.fn().mockResolvedValue({ data: readyAsset }),
+      deleteTrack: vi.fn(),
+      listRobotsJobs: vi.fn(async () => ({ data: [] })),
+      listRobotsDirectiveRuns: vi.fn(async () => ({ data: [] })),
+      ...robots,
+    };
+    if (directiveIds) {
+      await instance.onConfirmModal({ directiveIds } as any);
+    }
+    await instance.pollForAssetDetails();
+    // The announcement is deliberately not awaited by the poll.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    return { instance, notifier, muxApi: (instance as any).muxApi };
+  };
+
+  it('says so when the directive attached to this upload is already running', async () => {
+    const { notifier } = await runPollWith(
+      {
+        listRobotsJobs: vi.fn(async () => ({
+          data: [{ id: 'rjob_1', workflow: 'summarize', status: 'processing' }],
+        })),
+      },
+      ['drv_1']
+    );
+
+    expect(notifier.success).toHaveBeenCalledWith(
+      expect.stringContaining('Robots is already working on this video')
+    );
+  });
+
+  it('counts a run that has not dispatched a job yet', async () => {
+    // A directive run exists before the first workflow it dispatches does, so checking jobs
+    // alone would stay silent through exactly the window this toast is for.
+    const { notifier } = await runPollWith(
+      {
+        listRobotsDirectiveRuns: vi.fn(async () => ({
+          data: [{ run_id: 'drvrun_1', subject_id: 'asset-test-123', status: 'pending' }],
+        })),
+      },
+      ['drv_1']
+    );
+
+    expect(notifier.success).toHaveBeenCalledWith(
+      expect.stringContaining('Robots is already working on this video')
+    );
+  });
+
+  it('stays silent when nothing is running', async () => {
+    const { notifier } = await runPollWith({}, ['drv_1']);
+    expect(notifier.success).not.toHaveBeenCalled();
+  });
+
+  it('ignores a run belonging to a different asset', async () => {
+    const { notifier } = await runPollWith(
+      {
+        listRobotsDirectiveRuns: vi.fn(async () => ({
+          data: [{ run_id: 'drvrun_1', subject_id: 'someone-elses-asset', status: 'running' }],
+        })),
+      },
+      ['drv_1']
+    );
+    expect(notifier.success).not.toHaveBeenCalled();
+  });
+
+  it('costs nothing on an upload that attached no directives', async () => {
+    const { muxApi, notifier } = await runPollWith(
+      {
+        listRobotsJobs: vi.fn(async () => ({
+          data: [{ id: 'rjob_1', workflow: 'summarize', status: 'processing' }],
+        })),
+      },
+      []
+    );
+
+    // Not a quieter toast — no request at all. An install that never enabled Robots must not pay
+    // for this on every upload (ADR-0006).
+    expect(muxApi.listRobotsJobs).not.toHaveBeenCalled();
+    expect(notifier.success).not.toHaveBeenCalled();
+  });
+
+  it('says nothing when the entry is merely reopened, with no upload in this session', async () => {
+    const { muxApi } = await runPollWith(
+      {
+        listRobotsJobs: vi.fn(async () => ({
+          data: [{ id: 'rjob_1', workflow: 'summarize', status: 'processing' }],
+        })),
+      },
+      undefined
+    );
+
+    expect(muxApi.listRobotsJobs).not.toHaveBeenCalled();
+  });
+
+  it('speaks once, however many times the asset poll reports ready', async () => {
+    const { instance, notifier } = await runPollWith(
+      {
+        listRobotsJobs: vi.fn(async () => ({
+          data: [{ id: 'rjob_1', workflow: 'summarize', status: 'processing' }],
+        })),
+      },
+      ['drv_1']
+    );
+
+    await instance.pollForAssetDetails();
+    await instance.pollForAssetDetails();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(notifier.success).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * The tab strip.
+ *
+ * Eight tabs are wider than the entry editor's field column, and the strip has always scrolled —
+ * `overflow-x: auto` with `flex: 0 0 auto` tabs. What was reported as "the Data tab is clipped
+ * mid-word" was not the overflow: it was a `mask-image` gradient fading the last 20% of the
+ * strip to transparent, applied at *every* width. It faded whichever tab sat on the boundary to
+ * unreadable, it did so even when nothing overflowed and there was empty space beside the last
+ * tab, and it covered the scrollbar — erasing the one signal that honestly appears only when
+ * there is something to scroll to.
+ *
+ * jsdom has no layout, so the scrolling itself is verified in a browser at a constrained width
+ * (every tab reachable by scroll, and focusing the last tab scrolls it into view). What is
+ * pinned here is the specific defect, because it is a one-line regression away.
+ */
+describe('the tab strip', () => {
+  const css = readFileSync(join(process.cwd(), 'src/index.css'), 'utf8');
+  /** Comments stripped, so the explanation of what was removed is not read as the thing itself. */
+  const declarations = css.replace(/\/\*[\s\S]*?\*\//g, '');
+  const tabsScrollRules = declarations
+    .split('}')
+    .filter((block) => /\.tabs-scroll[^-\w]/.test(block.split('{')[0] ?? ''));
+
+  it('puts no gradient mask over the tabs', () => {
+    expect(tabsScrollRules.length).toBeGreaterThan(0);
+    for (const rule of tabsScrollRules) {
+      expect(rule).not.toMatch(/mask-image/);
+    }
+  });
+
+  it('still scrolls rather than squeezing the labels', () => {
+    const joined = tabsScrollRules.join('}');
+    expect(joined).toMatch(/overflow-x:\s*auto/);
+    // Without this the tabs shrink to fit and the longest labels wrap or clip instead.
+    expect(joined).toMatch(/flex:\s*0 0 auto/);
+  });
+
+  it('leaves no styles behind for the scroll buttons that were never built', () => {
+    // `.tabs-container` and `.tabs-scroll-button*` were an abandoned overflow affordance: 60
+    // lines of CSS no element carried, which is how the mask went unexamined for so long.
+    expect(declarations).not.toMatch(/tabs-scroll-button/);
+    expect(declarations).not.toMatch(/tabs-container/);
   });
 });

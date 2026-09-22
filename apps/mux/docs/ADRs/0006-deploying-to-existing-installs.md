@@ -77,3 +77,47 @@ worst in:
 ### Neutral
 - The new tab shifts the tab order for everyone. Cosmetic, and unavoidable for a feature that lives
   in a tab.
+
+## Amendment, 2026-09-21: what the tab costs, and the tab strip it sits in
+
+Two consequences recorded above have since been measured rather than reasoned about, and one of
+them was wrong.
+
+**"One extra tab and nothing else" was true about requests and not about the tab strip.** The
+Neutral note says the new tab shifts the tab order for everyone, "cosmetic, and unavoidable". It
+turned out not to be only cosmetic: with eight tabs the strip is about 860 px against an entry
+editor field column that is routinely half that, and `.tabs-scroll` carried a `mask-image`
+gradient fading its last 20% to transparent. That was meant to hint at more tabs. Measured in a
+browser at a constrained width it did three things instead — it faded whichever tab sat on the
+boundary to unreadable *mid-word*, which is how "Data" and "Metadata" were reported as clipped;
+it did so at every width, including widths where nothing overflowed and there was empty space
+beside the last tab; and it painted over the scrollbar, erasing the one signal that appears only
+when there is in fact something to scroll to.
+
+The strip already scrolled — `overflow-x: auto` with `flex: 0 0 auto` tabs — and focusing a tab
+brings it into view, so every tab was always reachable by scroll and by keyboard. The gradient is
+gone and the scrollbar is the affordance: thin, always drawn rather than left to the platform's
+overlay behaviour, and present exactly when there is overflow. Sixty lines of CSS for scroll
+buttons that no element ever carried went with it; a decorative rule nobody reads is the same
+hazard as the decorative `MUX_ASSET_MIRROR_KEYS` constant in ADR-0002's amendment, and it is part
+of why the mask went unexamined.
+
+**The "no requests" property survived a change that briefly threatened it.** Resolving Robots
+capability used to be a dedicated `listRobotsJobs({ limit: 1 })` probe, cached per browser
+session, awaited before the tab read anything it wanted. The probe is gone — the panel's own job
+list answers the same question — which removes a serialized round trip from the first open. What
+that nearly cost is the property this ADR is about: with the probe went the short-circuit that
+made entries 2..n of a session free for an install where Robots is *not* available. The session
+cache is still filled, now by the read that was happening anyway, and the panel reads it at mount
+and does not fetch when it already says unavailable. An account does not acquire the `robots:*`
+scope between two entries.
+
+### Consequences of this amendment
+
+- Every tab is legible at the widths this editor actually renders at, and the affordance for the
+  ones off-screen appears only when some are.
+- An install that never enables Robots still sees one extra tab, and opening it costs one failed
+  request per session rather than one per entry.
+- The gradient is the second decorative thing in this codebase to be read as a guarantee. The
+  test that pins its absence is a regression guard, not a layout test — jsdom has no layout, and
+  the scrolling itself is verified by hand in a browser at a constrained width.

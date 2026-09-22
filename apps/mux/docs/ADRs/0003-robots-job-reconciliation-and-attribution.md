@@ -231,3 +231,66 @@ to reach a terminal state, which for a long workflow is minutes.
 **Neutral.** `addByURL` still has the untreated version of this bug, as noted above. Nothing
 migrates: the scope only changes what is written from now on, and the old format is simply never
 trusted.
+
+## Amendment, 2026-09-21: the re-check could not run in the one case it exists for
+
+The amendment above says the per-refresh re-check now "does what the text always said". It does,
+and it still could not run.
+
+The re-check is an effect keyed on `pollNonce`. `pollNonce` advances only when `refresh` completes,
+and `refresh` is called by the poll loop, and the poll loop armed only on
+`inFlight.length > 0 || activeRuns.length > 0`. An unconfirmed create is **precisely** the state
+where nothing is in flight: the job is not on the entry, and it is not in the list — that is what
+"unconfirmed" means. So the one `refresh` in `handleRun`'s catch produced exactly one re-check,
+against a list Mux had usually not caught up with yet, and then the loop went quiet for the rest of
+the session. The promise was kept for jobs the tab could already see and broken for the only job
+it could not.
+
+What that costs is larger than one workflow, because `runDisabledReason` is not per-workflow. It
+disables **Run a workflow** outright, for all twelve. This is the shape of a client report we could
+not reproduce: `generate-premium-captions` completed, and afterwards `edit-captions` and
+`generate-chapters` "appeared blocked". They were blocked, along with everything else, by a guard
+raised minutes earlier on a different workflow that nothing was ever going to lift. Reloading the
+entry cleared it, which is why it looked intermittent.
+
+Two other hypotheses were tested against the code first and are recorded here because they are the
+obvious ones and they are both wrong:
+
+- **The new caption track lands `preparing`, not `ready`, and a consumer counts only `ready`.**
+  It does not. Both copies of `isCaptionTrack` admit `preparing` deliberately, the run form's
+  track picker filters on nothing at all, and `hasCaptions` counts the mirrored list. The only
+  `ready`-only tests in the app are the two download links in `TrackList`, which render an empty
+  cell and block nothing. The asset poll also re-polls a `preparing` track to `ready` on its own.
+- **The captions precondition reads a list that has not refreshed.** The resync a completed job
+  triggers re-reads the asset, and a `preparing` caption enters `captions` on that same read.
+
+So: the poll loop now also arms while a create is unresolved, which is what gives the re-check the
+refreshes it was always specified to run on.
+
+It is bounded by a **count of attempts** (`ROBOTS_UNCONFIRMED_RECHECK_TICKS`, ten at the 6 s
+cadence) rather than by a clock, and the distinction is the whole reason this ADR's original text
+says "nothing time-based unblocks it". A timer that re-enabled Run would be the double-charge this
+exists to prevent. A bound on how long we keep *looking* is not that: the guard stays up, Run stays
+disabled, and the two ways out are unchanged — the job turning up, or the editor saying nothing is
+running. What the bound stops is an open tab spending two CMA requests every six seconds forever
+over a job that never started.
+
+Ten ticks is a minute. A job Mux did create is listed within seconds of the create returning, and
+`findJobByPassthrough` opens the newest few candidates whatever their status — so unlike the
+orphan-adoption path described above, it does not have to wait for the job to reach a terminal
+state.
+
+### Consequences of this amendment
+
+**Positive.** The guard now lifts by itself in the case it was written for, rather than only in the
+case where something else happened to be running. A single unconfirmed create no longer disables
+every workflow in the catalog for the life of the session.
+
+**Negative.** An unconfirmed create now costs up to ten poll ticks — one list read each, plus the
+re-check's own list and up to five single-job reads per pass. Rare by construction, and the
+alternative is an editor who cannot run anything until they reload.
+
+**Neutral.** `pendingDirectiveRun` has no per-refresh re-check of its own and still lifts only by
+`loadDirectiveRuns` finding the run or by the escape hatch. It disables the directive button
+alone, not the workflow one, so it does not have the blast radius that made this worth fixing. It
+is the same shape of gap and it is not fixed here.

@@ -16,6 +16,7 @@ import { MuxApiError, MuxApiService } from '../../util/muxApi';
 import {
   ROBOTS_DOCS_URL,
   ROBOTS_POLL_INTERVAL_MS,
+  ROBOTS_UNCONFIRMED_RECHECK_TICKS,
   RobotsPassthroughScope,
   RobotsUnconfirmedCreateError,
   RobotsUnconfirmedDirectiveRunError,
@@ -23,13 +24,14 @@ import {
   activeJobs,
   applyRobotsDirectiveRunsToValue,
   applyRobotsJobsToValue,
+  cachedRobotsCapability,
   capabilityFromError,
   createRobotsDirectiveRunWithReconciliation,
   createRobotsJobWithReconciliation,
   findJobByPassthrough,
+  findRecentDirectiveRun,
   jobIdsFromDirectiveRuns,
   recordRobotsDirectiveRun,
-  resolveRobotsCapability,
   unfinishedJobRecords,
 } from '../../util/robots';
 import {
@@ -47,6 +49,7 @@ import RobotsOutputViewer from './RobotsOutputViewer';
 import RobotsDirectiveRunTable from './RobotsDirectiveRunTable';
 import ApplyToEntryModal from './ApplyToEntryModal';
 import { useRobotsDirectiveRuns } from './useRobotsDirectiveRuns';
+import { directiveNamesById } from './useRobotsDirectiveNames';
 import { useRobotsJobDetails } from './useRobotsJobDetails';
 import { useRobotsJobList } from './useRobotsJobList';
 
@@ -66,7 +69,9 @@ import { useRobotsJobList } from './useRobotsJobList';
  *
  * **Neither Run button offers a retry it cannot justify.** Both creates are billable and neither
  * API has an idempotency key, so an unconfirmed outcome is reconciled against the server and,
- * failing that, held behind a guard the editor dismisses by hand. See ADR-0003.
+ * failing that, held behind a guard. Both guards keep looking for what they are guarding against
+ * for a bounded number of poll ticks and lift by finding it; neither ever lifts on a timer, and
+ * the editor's "nothing is running" button stays the last resort. See ADR-0003.
  */
 
 interface RobotsPanelProps {
@@ -85,7 +90,36 @@ interface RobotsPanelProps {
   defaultDirectiveIds: string[];
 }
 
-const RobotsPanel: FC<RobotsPanelProps> = ({
+/**
+ * The asset gate, and it is a gate rather than an early return inside the panel.
+ *
+ * Everything this tab knows — the job list, the detail cache, the directive runs, the guard on an
+ * unconfirmed create — is *about one Mux asset*. Returning early from a component that has already
+ * run its hooks leaves all of that alive and invisible: with no asset the panel would hold a job
+ * list for a video that no longer exists, and on the next asset it would hold the *previous* one's.
+ * That second case is the reachable one. Pasting a different Mux asset ID replaces the whole value
+ * (ADR-0001) without unmounting this panel, and the persist effect would then merge the old
+ * asset's job records onto the new asset's entry — they carry a scope-matching `passthrough`, so
+ * `isPluginOriginatedJob` accepts them.
+ *
+ * So: no asset, no component. And `key` on the asset id, so an asset swap is a remount and no
+ * state can cross between two videos.
+ */
+const RobotsPanel: FC<RobotsPanelProps> = (props) => {
+  const assetId = props.value?.assetId;
+
+  if (!assetId) {
+    return (
+      <Box marginTop="spacingM">
+        <Note variant="neutral">Add a video before running Robots workflows.</Note>
+      </Box>
+    );
+  }
+
+  return <RobotsPanelForAsset key={assetId} {...props} assetId={assetId} />;
+};
+
+const RobotsPanelForAsset: FC<RobotsPanelProps & { assetId: string }> = ({
   sdk,
   muxApi,
   value,
@@ -93,9 +127,8 @@ const RobotsPanel: FC<RobotsPanelProps> = ({
   updateField,
   resync,
   defaultDirectiveIds,
+  assetId,
 }) => {
-  const assetId = value?.assetId;
-
   const [directives, setDirectives] = useState<RobotsDirective[]>([]);
   const [selectedDirectiveId, setSelectedDirectiveId] = useState('');
   const [cancellingIds, setCancellingIds] = useState<string[]>([]);
@@ -115,7 +148,13 @@ const RobotsPanel: FC<RobotsPanelProps> = ({
   const [pendingCreate, setPendingCreate] = useState<
     { passthrough: string; workflow: RobotsWorkflow } | undefined
   >();
-  /** The same guard for the directive path, which spends more per click. */
+  /**
+   * The same guard for the directive path, which spends more per click: the directive whose run
+   * we could not confirm.
+   *
+   * Only the id, where the job guard also carries a passthrough — the runs endpoint takes none,
+   * so there is no token to match and adoption is by asset plus recency. See ADR-0003.
+   */
   const [pendingDirectiveRun, setPendingDirectiveRun] = useState<string | undefined>();
 
   const isMountedRef = useRef(true);
@@ -130,8 +169,16 @@ const RobotsPanel: FC<RobotsPanelProps> = ({
    * anyone opens this tab on an old entry.
    */
   const seenRunningJobIdsRef = useRef<Set<string>>(new Set());
-  /** Keeps the per-refresh re-check of an unconfirmed create from overlapping itself. */
-  const isReconcilingRef = useRef(false);
+  /** Keep each per-refresh re-check from overlapping itself. One per guard: they look separately. */
+  const isReconcilingCreateRef = useRef(false);
+  const isReconcilingDirectiveRunRef = useRef(false);
+  /** How many poll ticks each unresolved create has already been looked for on. */
+  const createRecheckTicksRef = useRef(0);
+  const directiveRecheckTicksRef = useRef(0);
+  /** What the session already knew about Robots before this panel read anything. */
+  const cachedCapabilityRef = useRef(cachedRobotsCapability());
+  /** So the picker's names are fetched once per asset rather than on every activation. */
+  const hasLoadedDirectivesRef = useRef(false);
 
   /**
    * Which install this entry is, for scoping the passthrough we stamp and for deciding whether one
@@ -196,7 +243,6 @@ const RobotsPanel: FC<RobotsPanelProps> = ({
     setIsLoading,
     loadError,
     hasLoadedOnce,
-    setHasLoadedOnce,
     pollNonce,
     refresh,
     addCreatedJob,
@@ -215,7 +261,7 @@ const RobotsPanel: FC<RobotsPanelProps> = ({
     muxApi,
     assetId,
     defaultDirectiveIds,
-    directives,
+    recordedRuns: value?.robotsDirectiveRuns,
     isMountedRef,
   });
 
@@ -241,45 +287,50 @@ const RobotsPanel: FC<RobotsPanelProps> = ({
     [value?.robotsJobs]
   );
 
-  // First activation: resolve capability once per session, then load.
+  /**
+   * First activation.
+   *
+   * Everything here is one app-action round trip, which is two CMA requests and a function that
+   * may cold-start, so what matters is how many of them are *serialized*. There used to be three
+   * in a row before the table could paint: a capability probe, then the job list, then the
+   * directive list. Two of those are gone.
+   *
+   * The probe was `listRobotsJobs({ limit: 1 })` — the same call as the read below, with its
+   * result thrown away. `refresh` already reports capability both ways (a successful list *is*
+   * the check, and a 401/403 becomes the right `RobotsCapabilityNote`), so the real read answers
+   * the question and the probe was a round trip spent learning something the next one would say.
+   * The per-session cache it existed for is unchanged — `refresh` fills it now.
+   *
+   * What is left is one parallel pass: the job list and the directive runs together. An install
+   * that never enabled Robots configures no directives, so `loadDirectiveRuns` makes no call at
+   * all there and the non-enabled case still costs exactly one failed request.
+   */
   useEffect(() => {
     // `isActive` is what keeps Robots free for editors who never open this tab — but an entry
     // reopened while a job it started is still running has to pick the loop back up on its own,
     // or a publish re-publishes the stale `processing` record. Only entries that already record
     // an unfinished job qualify, so an install that has never run Robots still fetches nothing.
-    if ((!isActive && !hasUnfinishedJobs) || !muxApi || !assetId || hasLoadedOnce) return;
-    let cancelled = false;
+    if ((!isActive && !hasUnfinishedJobs) || !muxApi || hasLoadedOnce) return;
+    // Already answered, for this whole browser session: an account without the `robots:*` scope
+    // does not acquire it between two entries, and asking again per entry is what the session
+    // cache exists to prevent. This is the one place that reads it, because it is the only place
+    // that would otherwise spend a request on a question with a known answer.
+    //
+    // From a ref captured at mount, not from the `capability` state. React 17 does not batch the
+    // two `setState`s the fetch makes across its `await`, so `setCapability('enabled')` renders
+    // before `setHasLoadedOnce(true)` does — and a `capability` dependency here would re-enter
+    // this effect in that gap, with `hasLoadedOnce` still false, and fetch everything twice.
+    if (cachedCapabilityRef.current && cachedCapabilityRef.current.state !== 'enabled') return;
 
-    (async () => {
-      setIsLoading(true);
-      const resolved = await resolveRobotsCapability(muxApi);
-      if (cancelled || !isMountedRef.current) return;
-      setCapability(resolved);
-      if (resolved.state !== 'enabled') {
-        setIsLoading(false);
-        setHasLoadedOnce(true);
-        return;
-      }
-      await Promise.all([refresh({ silent: true }), loadDirectiveRuns()]);
-      // Directive *names*, for the picker. Cosmetic, and it widens which directives
-      // `loadDirectiveRuns` looks at on its next pass, so it goes last.
-      await loadDirectives();
-    })();
-
-    return () => {
-      cancelled = true;
-    };
+    setIsLoading(true);
+    void Promise.all([refresh({ silent: true }), loadDirectiveRuns()]);
   }, [
     isActive,
     hasUnfinishedJobs,
     muxApi,
-    assetId,
     hasLoadedOnce,
     refresh,
-    loadDirectives,
     loadDirectiveRuns,
-    setCapability,
-    setHasLoadedOnce,
     setIsLoading,
   ]);
 
@@ -290,6 +341,20 @@ const RobotsPanel: FC<RobotsPanelProps> = ({
   }, [isActive, capability?.state, hasLoadedOnce, loadDirectiveRuns]);
 
   /**
+   * Directive *names*, for the picker.
+   *
+   * Cosmetic, so it is deliberately off the path to the job table: it waits for the list read to
+   * confirm Robots is available and then runs on its own, instead of being the third serialized
+   * round trip in front of everything the editor came to see.
+   */
+  useEffect(() => {
+    if (!isActive || capability?.state !== 'enabled' || !hasLoadedOnce) return;
+    if (hasLoadedDirectivesRef.current) return;
+    hasLoadedDirectivesRef.current = true;
+    loadDirectives();
+  }, [isActive, capability?.state, hasLoadedOnce, loadDirectives]);
+
+  /**
    * Re-check an unconfirmed create against the job list, once per refresh.
    *
    * The guard has to have an exit that is not the button that duplicates the job. Keyed on
@@ -297,9 +362,9 @@ const RobotsPanel: FC<RobotsPanelProps> = ({
    * list call and at most five single-job reads, only while a create is genuinely unresolved.
    */
   useEffect(() => {
-    if (!muxApi || !assetId || !pendingCreate) return;
-    if (isReconcilingRef.current) return;
-    isReconcilingRef.current = true;
+    if (!muxApi || !pendingCreate) return;
+    if (isReconcilingCreateRef.current) return;
+    isReconcilingCreateRef.current = true;
 
     let cancelled = false;
     (async () => {
@@ -334,7 +399,7 @@ const RobotsPanel: FC<RobotsPanelProps> = ({
         // Only now, with the job positively identified, does Run come back.
         setPendingCreate(undefined);
       } finally {
-        isReconcilingRef.current = false;
+        isReconcilingCreateRef.current = false;
       }
     })();
 
@@ -342,6 +407,56 @@ const RobotsPanel: FC<RobotsPanelProps> = ({
       cancelled = true;
     };
   }, [muxApi, assetId, pendingCreate, pollNonce, scope, updateField, rememberJobDetail]);
+
+  /**
+   * The same re-check for an unconfirmed *directive* run — the effect above applied twice, not a
+   * second design. Keyed on the same `pollNonce`, bounded by the same tick count, and the guard
+   * it lifts is lifted the same way: by finding the run, never by a timer.
+   *
+   * One difference, and it is forced by the API: there is no `passthrough` on a run, so this
+   * matches on directive + asset + a recent `started_at` instead of an exact token. That match is
+   * `findRecentDirectiveRun`'s, unchanged and still fail-closed — a run with no `started_at` is
+   * never adopted — because the cost of adopting a stranger's run is dropping the guard on a run
+   * that never started. The adoption window is twice `ROBOTS_UNCONFIRMED_RECHECK_TICKS` worth of
+   * ticks, so the looking stops well before a run started at the click could age out of it.
+   */
+  useEffect(() => {
+    if (!muxApi || !pendingDirectiveRun) return;
+    if (isReconcilingDirectiveRunRef.current) return;
+    isReconcilingDirectiveRunRef.current = true;
+
+    const directiveId = pendingDirectiveRun;
+    let cancelled = false;
+    (async () => {
+      try {
+        const found = await findRecentDirectiveRun(muxApi, directiveId, assetId, { attempts: 1 });
+        if (cancelled || !isMountedRef.current || !found) return;
+
+        try {
+          // The same write `handleRunDirective` makes on the happy path, for the same reason:
+          // it is the only place a run is added to the entry, and without it ownership of the
+          // jobs this run dispatches expires with the newest 25 (ADR-0009). `save: true` because
+          // the run is already billing.
+          await updateField((current) => recordRobotsDirectiveRun(current, found), { save: true });
+        } catch (writeError) {
+          console.error(
+            '[robots] Adopted an unconfirmed directive run but could not record it',
+            writeError
+          );
+        }
+
+        // The optimistic row, so the poll loop now has the run itself to stay alive for.
+        addDirectiveRun(found);
+        setPendingDirectiveRun(undefined);
+      } finally {
+        isReconcilingDirectiveRunRef.current = false;
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [muxApi, assetId, pendingDirectiveRun, pollNonce, updateField, addDirectiveRun]);
 
   /** The newest reads, for the persist mutator to apply against. See the effect below. */
   const latestPersistInputRef = useRef<{ jobs: RobotsJob[]; runs: RobotsDirectiveRun[] }>({
@@ -420,9 +535,41 @@ const RobotsPanel: FC<RobotsPanelProps> = ({
     }
     if (capability?.state !== 'enabled') return;
     if (!hasLoadedOnce) return;
-    if (inFlight.length === 0 && activeRuns.length === 0) return;
+    // The third reason to keep ticking, and the one that was missing. ADR-0003 promises an
+    // unresolved create "re-checks the job list on every subsequent refresh" — but the re-check
+    // effect is keyed on `pollNonce`, and `pollNonce` only advances when this loop calls
+    // `refresh`. An unconfirmed create is exactly the case where nothing is in flight to arm the
+    // loop, so the re-check ran once and then never again, and `runDisabledReason` — which
+    // disables Run for *every* workflow, not just the one that was being created — stayed up for
+    // the rest of the session. Reloading the entry was the only thing that cleared it.
+    //
+    // Bounded by a count of attempts rather than a clock, because ADR-0003's invariant is that
+    // nothing time-based re-enables Run. What the bound ends is the *looking*; the guard itself
+    // still only lifts by finding the job or by the editor saying nothing is running.
+    //
+    // Both guards, on the same terms. `pendingDirectiveRun` had the identical gap — its re-check
+    // is keyed on the same `pollNonce`, so with nothing in flight it never ran either, and the
+    // Run-directive button stayed disabled for the session. Smaller blast radius than the job
+    // guard, same bug.
+    const isRecheckingCreate =
+      !!pendingCreate && createRecheckTicksRef.current < ROBOTS_UNCONFIRMED_RECHECK_TICKS;
+    const isRecheckingDirectiveRun =
+      !!pendingDirectiveRun && directiveRecheckTicksRef.current < ROBOTS_UNCONFIRMED_RECHECK_TICKS;
+    if (
+      inFlight.length === 0 &&
+      activeRuns.length === 0 &&
+      !isRecheckingCreate &&
+      !isRecheckingDirectiveRun
+    ) {
+      return;
+    }
 
     pollTimerRef.current = setTimeout(() => {
+      if (pendingCreate) createRecheckTicksRef.current += 1;
+      if (pendingDirectiveRun) directiveRecheckTicksRef.current += 1;
+      // Ticks the nonce both re-checks key off, so it runs even on a directive-only tick. The
+      // run list is not read here: the re-check effect reads it itself, and paying for both
+      // would double what an unconfirmed run costs per tick.
       refresh({ silent: true });
       // Re-read the runs only while one is live: it costs a call per directive, and it is also the
       // only way an active run is ever seen to reach a terminal status — i.e. the only way this
@@ -438,13 +585,15 @@ const RobotsPanel: FC<RobotsPanelProps> = ({
     hasLoadedOnce,
     inFlight.length,
     activeRuns.length,
+    pendingCreate,
+    pendingDirectiveRun,
     pollNonce,
     refresh,
     loadDirectiveRuns,
   ]);
 
   const handleRun = async (workflow: RobotsWorkflow, parameters: Record<string, unknown>) => {
-    if (!muxApi || !assetId) return;
+    if (!muxApi) return;
     setIsStartingRun(true);
     try {
       const job = await createRobotsJobWithReconciliation(
@@ -483,6 +632,7 @@ const RobotsPanel: FC<RobotsPanelProps> = ({
       if (!isMountedRef.current) return;
       if (error instanceof RobotsUnconfirmedCreateError) {
         // Not an error toast with a retry: the job may be running and billing.
+        createRecheckTicksRef.current = 0;
         setPendingCreate({ passthrough: error.passthrough, workflow: error.workflow });
         sdk.notifier.warning(error.message);
         await refresh({ silent: true });
@@ -522,7 +672,7 @@ const RobotsPanel: FC<RobotsPanelProps> = ({
    * creation, and fall back to a guard rather than a retryable error.
    */
   const handleRunDirective = async () => {
-    if (!muxApi || !assetId || !selectedDirectiveId) return;
+    if (!muxApi || !selectedDirectiveId) return;
     // Not only the button's `isDisabled`: React processes state updates asynchronously, and two
     // clicks inside one frame would otherwise both fire a POST.
     if (isStartingDirectiveRun) return;
@@ -554,6 +704,8 @@ const RobotsPanel: FC<RobotsPanelProps> = ({
     } catch (error) {
       if (!isMountedRef.current) return;
       if (error instanceof RobotsUnconfirmedDirectiveRunError) {
+        // A fresh budget of ticks to find the run on, the same as the job path.
+        directiveRecheckTicksRef.current = 0;
         setPendingDirectiveRun(error.directiveId);
         sdk.notifier.warning(error.message);
         await loadDirectiveRuns();
@@ -572,12 +724,11 @@ const RobotsPanel: FC<RobotsPanelProps> = ({
     }
   };
 
-  if (!assetId) {
-    return (
-      <Box marginTop="spacingM">
-        <Note variant="neutral">Add a video before running Robots workflows.</Note>
-      </Box>
-    );
+  // Before the skeleton, not after it. A capability that is already known to be unavailable — by
+  // this panel's own read, or from the session cache a previous entry filled — is a final answer,
+  // so there is nothing to wait for and the effect above does not fetch.
+  if (capability && capability.state !== 'enabled') {
+    return <RobotsCapabilityNote state={capability.state} message={capability.message} />;
   }
 
   // Not `&& isLoading`: effects run after render, so the first render with `isActive` true has not
@@ -590,10 +741,6 @@ const RobotsPanel: FC<RobotsPanelProps> = ({
         </Skeleton.Container>
       </Box>
     );
-  }
-
-  if (capability && capability.state !== 'enabled') {
-    return <RobotsCapabilityNote state={capability.state} message={capability.message} />;
   }
 
   // An asset queued for deletion at the next publish is not worth spending units on.
@@ -629,9 +776,7 @@ const RobotsPanel: FC<RobotsPanelProps> = ({
     ? directives
     : defaultDirectiveIds.map((id) => ({ id, name: id }) as RobotsDirective);
 
-  const directiveNames = Object.fromEntries(
-    availableDirectives.map((directive) => [directive.id, directive.name ?? directive.id])
-  );
+  const directiveNames = directiveNamesById(directives, defaultDirectiveIds);
 
   return (
     <Box marginTop="spacingS">
@@ -748,6 +893,8 @@ const RobotsPanel: FC<RobotsPanelProps> = ({
             <Note variant="warning" data-testid="robots-directive-run-unconfirmed">
               {directiveRunDisabledReason}
               <Box marginTop="spacingS">
+                {/* As on the job guard: explicit, informed, and not the only way out — the
+                    re-check above resolves this by finding the run. */}
                 <Button
                   size="small"
                   variant="secondary"

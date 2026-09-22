@@ -170,3 +170,73 @@ and the value flips back and forth for as long as the entry is edited. A mirrore
 - `robotsJobs` and `robotsDirectiveRuns` overlap on purpose: a dispatched job appears in both, once
   as a job record and once as an id inside its run. They answer different questions — what ran, and
   what set it running.
+
+## Amendment, 2026-09-21: which directives get read, and saying so after an upload
+
+Two things, both about the set of directives this tab asks the runs endpoint for.
+
+### The set was "every directive in the account"
+
+The Context above writes the ownership derivation as
+`listRobotsDirectives({ limit: 100 }) ∪ defaultDirectiveIds → listRobotsDirectiveRuns(...)`, and
+that first term is a list fetched for something else entirely: the *names* in the ad-hoc picker.
+Unioning it into the poll set means the runs of every directive in the account are read, one
+app-action round trip each, to find the at most one or two that touch this asset. Measured on a
+fixture account with fifty directives, opening the tab went from 4 calls to 56 — 52 of them
+`listRobotsDirectiveRuns` against directives with no connection to the video on screen.
+
+Recording it as a decision would overstate it: the widening was a side effect of where
+`loadDirectives` sat in the load order, and the original code even hid it by accident, because the
+widened pass usually collided with the one already in flight and was dropped by the hook's own
+one-at-a-time guard. A fan-out that large, landing only sometimes, is worse than either outcome.
+
+The set is now three narrower sources, and none of them is the account: the directives configured
+to run at ingest, the directives this entry already records a run from, and the ones currently on
+screen. The middle one is what this ADR is for — a run started from the tab is recorded at
+creation, so its directive stays in the set even if an admin later drops it from the
+configuration, and even after the run has aged out of the API's newest-25 window. The rejected
+alternative is unchanged: there is still no `asset_id` filter on the runs endpoint, so asking
+fewer directives is the only lever there is.
+
+### Ingest-dispatched runs now say hello, once
+
+The Negative consequence above stands: a run Mux dispatches from `new_asset_settings` has no
+creation moment in the browser, so there is nothing for this app to record, and its jobs are
+claimable only while the run is listed. Testing found the editor-facing half of that gap, which is
+smaller and worth closing on its own: the asset uploaded, the attached directive ran correctly,
+and the editor had no idea until they happened to open the Robots tab.
+
+So when an asset reports `ready` after an upload that attached a directive, the app checks once
+for jobs or runs on it and, if there are any, says so — a notifier toast pointing at the tab. It
+is not a fix for the ownership gap and does not pretend to be; ownership still needs either a
+server-side filter on the runs endpoint or a record written by `onPublish`.
+
+Four bounds, because a toast is not worth a poll loop:
+
+- **Only for an upload that attached a directive.** The ids are stashed at `onConfirmModal`,
+  which is the one moment the browser knows automation was requested. An install with no
+  directives configured makes no request and hears nothing (ADR-0006).
+- **Once per session**, from an instance flag — never derived from the stored value, which is
+  what keeps it off every later open of an entry whose asset happens to have automation on it.
+- **Four attempts, five seconds apart**, then it stops and leaves the question to the tab.
+- **`await`ed waits, not scheduled callbacks**, with an unmount check before each attempt and
+  before the toast. A closing tab stops rather than notifying into a component that is gone.
+
+It fires on `ready` rather than on the asset id appearing, because that is when an
+ingest-attached directive actually starts — for a long video the id arrives minutes earlier.
+
+### Consequences of this amendment
+
+**Positive.** Opening the tab costs a bounded number of round trips again, independent of how
+many directives the account has. Automation an editor could not see now announces itself at the
+moment they are still looking at the upload.
+
+**Negative.** A directive whose run this entry has never recorded, and which is no longer in the
+configuration, is not polled. That is the intended narrowing and it is a real loss: the case it
+gives up is an ingest-dispatched run from a directive an admin removed after the upload. It was
+already unclaimable once its run left the list window.
+
+**Neutral.** The full directive listing is still fetched, still once, still only for the picker's
+names — it just no longer decides what gets polled. The same listing now also labels the upload
+modal's Automation section, which used to render raw ids beside a checkbox asking whether to
+spend money.

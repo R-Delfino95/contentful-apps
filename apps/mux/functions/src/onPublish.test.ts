@@ -294,3 +294,91 @@ describe('handler — creating a playback ID from a queued action', () => {
     expect(calls).toEqual([]);
   });
 });
+
+/**
+ * What the field holds after a queued asset delete is published.
+ *
+ * Asked directly by review: does deleting a video leave JSON residue behind — a value with no
+ * `assetId` but still carrying `robotsJobs`, `robotsOutputs` or `robotsDirectiveRuns`? It does
+ * not, and this pins that, because the shape of the answer is the opposite of what a merge
+ * function usually does: `GET /video/v1/assets/{id}` 404s, and the whole field is dropped rather
+ * than merged into.
+ */
+describe('handler — publishing a queued asset delete', () => {
+  const entryWithDeletedAsset = () => ({
+    sys: {
+      id: 'entry-1',
+      environment: { sys: { id: 'master' } },
+      space: { sys: { id: 'space-1' } },
+    },
+    fields: {
+      muxVideo: {
+        'en-US': {
+          version: 4,
+          assetId: 'asset-1',
+          playbackId: 'playback-1',
+          captions: [captionTrack()],
+          robotsJobs: [{ id: 'rjob_1', workflow: 'summarize', status: 'completed' }],
+          robotsOutputs: { summarize: { jobId: 'rjob_1', title: 'Generated title' } },
+          robotsDirectiveRuns: [{ runId: 'drvrun_1', directiveId: 'drv_1' }],
+          pendingActions: {
+            delete: [{ type: 'asset', id: 'asset-1', retry: 0 }],
+            create: [],
+            update: [],
+          },
+        },
+      },
+    },
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('removes the whole field, leaving no Robots records behind on a value with no asset', async () => {
+    const entry = entryWithDeletedAsset();
+    let stored: any = JSON.parse(JSON.stringify(entry));
+
+    vi.mocked(createClient).mockReturnValue({
+      entry: {
+        get: vi.fn(async () => JSON.parse(JSON.stringify(stored))),
+        update: vi.fn(async (_params: unknown, updated: any) => {
+          stored = updated;
+          return updated;
+        }),
+        publish: vi.fn(async () => stored),
+      },
+    } as any);
+
+    vi.mocked(muxFetch).mockImplementation(
+      async (_credentials: unknown, method: string) =>
+        method === 'DELETE'
+          ? ({ ok: true, status: 200, json: async () => ({}) } as any)
+          : // The asset is gone, so the refresh read 404s.
+            ({ ok: false, status: 404, json: async () => ({}) } as any)
+    );
+
+    await handler(
+      { type: 'appevent.handler', body: entry },
+      {
+        appInstallationParameters: { muxAccessTokenId: 'id', muxAccessTokenSecret: 'secret' },
+        cmaClientOptions: {},
+      }
+    );
+
+    // The asset was deleted at Mux...
+    expect(
+      vi.mocked(muxFetch).mock.calls.some(
+        ([, method, path]) => method === 'DELETE' && path === '/video/v1/assets/asset-1'
+      )
+    ).toBe(true);
+
+    // ...and the field is dropped outright, not merged down to a husk. `undefined` is how a key
+    // is removed on the way to the CMA, so nothing partial survives — no `robotsJobs` on a value
+    // with no `assetId`, and nothing for the browser to pick back up.
+    expect(stored.fields.muxVideo).toBeUndefined();
+    expect(JSON.stringify(stored)).not.toContain('robotsJobs');
+    expect(JSON.stringify(stored)).not.toContain('robotsOutputs');
+    expect(JSON.stringify(stored)).not.toContain('robotsDirectiveRuns');
+  });
+});

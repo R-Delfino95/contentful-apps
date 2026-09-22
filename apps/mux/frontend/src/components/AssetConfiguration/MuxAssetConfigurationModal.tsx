@@ -8,6 +8,8 @@ import MetadataConfiguration, { MetadataConfig } from './MetadataConfiguration';
 import AutomationConfiguration from './AutomationConfiguration';
 import { MuxContentfulObject, PolicyType } from '../../util/types';
 import { FieldExtensionSDK } from '@contentful/app-sdk';
+import { MuxApiService } from '../../util/muxApi';
+import { useRobotsDirectiveNames } from '../Robots/useRobotsDirectiveNames';
 
 // Audio file extensions for detection
 const AUDIO_EXTENSIONS = [
@@ -69,6 +71,8 @@ interface MuxAssetConfigurationModalProps {
   isEditMode?: boolean;
   asset?: MuxContentfulObject;
   sdk: FieldExtensionSDK;
+  /** Only used to put names on the configured Robots directives. Absent until the app has one. */
+  muxApi?: MuxApiService;
   /** File being uploaded (from drag & drop or file picker) */
   file?: File | null;
   /** URL for remote upload */
@@ -83,6 +87,7 @@ const ModalContent: FC<MuxAssetConfigurationModalProps> = ({
   isEditMode = false,
   asset,
   sdk,
+  muxApi,
   file = null,
   pendingUploadURL = null,
 }) => {
@@ -96,6 +101,10 @@ const ModalContent: FC<MuxAssetConfigurationModalProps> = ({
 
   // Detect if the input is an audio-only file
   const isAudioOnly = useMemo(() => isAudioFile(file, pendingUploadURL), [file, pendingUploadURL]);
+
+  // Resolved only for a real upload — editing an existing asset creates nothing, so it has no
+  // Automation section to label. Not awaited anywhere: the ids render until the names arrive.
+  const directiveNames = useRobotsDirectiveNames(muxApi, defaultDirectiveIds, !isEditMode);
 
   // DRM is disabled for audio files
   const effectiveDRMEnabled = muxEnableDRM && !isAudioOnly;
@@ -296,6 +305,7 @@ const ModalContent: FC<MuxAssetConfigurationModalProps> = ({
                 <AutomationConfiguration
                   availableDirectiveIds={defaultDirectiveIds}
                   selectedDirectiveIds={modalData.directiveIds}
+                  directiveNames={directiveNames}
                   onChange={(directiveIds) => setModalData((prev) => ({ ...prev, directiveIds }))}
                 />
               </Accordion.Item>

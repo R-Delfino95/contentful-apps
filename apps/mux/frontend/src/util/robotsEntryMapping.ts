@@ -260,6 +260,32 @@ export function formatFieldValue(value: unknown): string {
   return JSON.stringify(value);
 }
 
+/**
+ * True when the field already holds exactly what we would write.
+ *
+ * "Has content" and "has *this* content" are different answers, and conflating them is what made
+ * the dialog say *"Title already has content. Pick it as the target to replace it"* about a field
+ * whose content was the generated title, applied a minute earlier. There is nothing to replace
+ * there and nothing to do, and telling someone to overwrite a value with itself is worse than
+ * saying nothing.
+ *
+ * Compared by value, and for Rich Text through its text, because that is the only side of the
+ * conversion that survives: `valueForField` wraps a string in a one-paragraph document, so the
+ * document we wrote reads back as exactly the string we wrote. A document the editor has since
+ * restructured does not, which is correct — it is no longer what we generated.
+ */
+export function matchesGeneratedValue(current: unknown, generated: string | string[]): boolean {
+  if (Array.isArray(generated)) {
+    return (
+      Array.isArray(current) &&
+      current.length === generated.length &&
+      current.every((entry, index) => entry === generated[index])
+    );
+  }
+  if (typeof current === 'string') return current === generated;
+  return richTextToPlainText(current) === generated;
+}
+
 /** True when writing would replace content the editor already has. */
 export function wouldOverwrite(current: unknown): boolean {
   if (current === undefined || current === null || current === '') return false;

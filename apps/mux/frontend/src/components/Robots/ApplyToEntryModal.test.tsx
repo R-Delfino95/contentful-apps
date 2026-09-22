@@ -261,3 +261,78 @@ describe('ApplyToEntryModal — nothing to map', () => {
     ).toBeInTheDocument();
   });
 });
+
+describe('ApplyToEntryModal — a value that has already been applied', () => {
+  /**
+   * Reported from review, annotated "technically already applied?": after applying, reopening
+   * the dialog said *"Title already has content. Pick it as the target to replace it"* about the
+   * field holding the value it had just written. "Has content" and "holds exactly this" are
+   * different answers, and only the second one means there is nothing to do.
+   */
+  it('says a field already holds this value instead of offering to replace it', () => {
+    renderModal([
+      { id: 'title', type: 'Symbol', value: 'Generated title' },
+      { id: 'summary', type: 'Text' },
+      { id: 'tags', type: 'Array', items: { type: 'Symbol' } },
+    ]);
+
+    expect(screen.getByText(/title label already holds this value/)).toBeInTheDocument();
+    expect(screen.queryByText(/title label already has content/)).not.toBeInTheDocument();
+  });
+
+  it('still offers to replace a field holding something else', () => {
+    // Title and Description are both text outputs, so with one text field on the content type
+    // both rows point at it and both say the same thing.
+    renderModal([{ id: 'title', type: 'Symbol', value: "The editor's own headline" }]);
+
+    expect(screen.getAllByText(/title label already has content/).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/already holds this value/)).not.toBeInTheDocument();
+  });
+
+  it('does not pre-select an already-applied field, because there is nothing to do', () => {
+    renderModal([{ id: 'title', type: 'Symbol', value: 'Generated title' }]);
+
+    expect((targetFor('Title') as HTMLSelectElement).value).toBe('');
+    expect(applyButton()).toBeDisabled();
+  });
+
+  it('says "Already applied" rather than "Will be replaced" on a row the editor picks', async () => {
+    renderModal([{ id: 'title', type: 'Symbol', value: 'Generated title' }]);
+
+    await userEvent.selectOptions(targetFor('Title'), 'title');
+
+    expect(screen.getByText('Already applied')).toBeInTheDocument();
+    expect(screen.queryByText('Will be replaced')).not.toBeInTheDocument();
+  });
+
+  it('recognises a tag list it already wrote, in order', () => {
+    renderModal([{ id: 'tags', type: 'Array', items: { type: 'Symbol' }, value: ['alpha', 'beta'] }]);
+
+    expect(screen.getByText(/tags label already holds this value/)).toBeInTheDocument();
+  });
+
+  it('does not call a different tag list applied', () => {
+    renderModal([{ id: 'tags', type: 'Array', items: { type: 'Symbol' }, value: ['alpha'] }]);
+
+    expect(screen.getByText(/tags label already has content/)).toBeInTheDocument();
+  });
+
+  it('recognises a Rich Text field holding the document it wrote', () => {
+    // The stored value is a document and the generated value is a string, so the comparison has
+    // to be against the document's text — the same direction `valueForField` converts in.
+    renderModal([
+      { id: 'body', type: 'RichText', value: richTextDocument('Generated description') },
+    ]);
+
+    expect(screen.getByText(/body label already holds this value/)).toBeInTheDocument();
+  });
+
+  it('treats a Rich Text field the editor has since rewritten as content, not as applied', () => {
+    renderModal([
+      { id: 'body', type: 'RichText', value: richTextDocument('Something the editor wrote') },
+    ]);
+
+    expect(screen.getAllByText(/body label already has content/).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/already holds this value/)).not.toBeInTheDocument();
+  });
+});

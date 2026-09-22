@@ -101,6 +101,8 @@ const RobotsRunModal: FC<RobotsRunModalProps> = ({
   };
 
   const handleContinue = () => {
+    // Belt and braces: the button below is disabled on the same condition, and this is what
+    // stops a keyboard or programmatic activation getting past it.
     if (errors.length > 0) return;
     setConfirming(true);
   };
@@ -244,11 +246,15 @@ const RobotsRunModal: FC<RobotsRunModalProps> = ({
                 <Button variant="secondary" onClick={onClose}>
                   Cancel
                 </Button>
+                {/* Disabled while anything above says the run cannot be built, not merely
+                    inert on click. A Continue that looks available and then does nothing reads
+                    as a broken button, and the editor's next move is to press it again rather
+                    than to scroll up and read why. */}
                 <Button
                   variant="primary"
-                  isDisabled={isRunDisabled}
+                  isDisabled={isRunDisabled || errors.length > 0}
                   onClick={handleContinue}
-                  title={runDisabledReason}>
+                  title={runDisabledReason ?? errors[0]}>
                   Continue
                 </Button>
               </>

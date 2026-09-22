@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useRef, useState } from 'react';
 import { MuxApiService } from '../../util/muxApi';
-import { RobotsDirective, RobotsDirectiveRun } from '../../util/robotsTypes';
+import { RobotsDirectiveRun, RobotsDirectiveRunRecord } from '../../util/robotsTypes';
 
 /**
  * The directive runs on this asset.
@@ -20,36 +20,56 @@ export function useRobotsDirectiveRuns({
   muxApi,
   assetId,
   defaultDirectiveIds,
-  directives,
+  recordedRuns,
   isMountedRef,
 }: {
   muxApi?: MuxApiService;
-  assetId?: string;
+  /** Required: the panel does not mount without an asset, and remounts when it changes. */
+  assetId: string;
   defaultDirectiveIds: string[];
-  directives: RobotsDirective[];
+  /** Runs the entry itself records, so a directive dropped from the config is still polled. */
+  recordedRuns?: RobotsDirectiveRunRecord[];
   isMountedRef: React.MutableRefObject<boolean>;
 }): RobotsDirectiveRunsState {
   const [directiveRuns, setDirectiveRuns] = useState<RobotsDirectiveRun[]>([]);
   /** One pass at a time: overlapping passes resolve out of order and the loser wins. */
   const isLoadingRef = useRef(false);
 
+  /** Directives this entry has actually seen a run from, whatever the config says today. */
+  const recordedDirectiveIds = useMemo(
+    () => (recordedRuns ?? []).map((run) => run.directiveId).filter(Boolean),
+    [recordedRuns]
+  );
+  const liveDirectiveIds = useMemo(
+    () => directiveRuns.map((run) => run.directive_id).filter((id): id is string => !!id),
+    [directiveRuns]
+  );
+
   /**
    * Every directive worth reading, as one stable string.
    *
-   * The identity of `defaultDirectiveIds` is not ours to rely on — it comes straight off the
-   * installation parameters — and `loadDirectiveRuns` is a dependency of the poll effect, so a new
-   * array on a parent render would re-arm the 6 s timer before it ever fired.
+   * Three sources, and **not** "every directive in the account". This used to union in the full
+   * `listRobotsDirectives` result, which is fetched for the picker's *names* — so opening the tab
+   * on an account with a hundred directives listed the runs of all hundred, one app-action round
+   * trip each, to find the at most one or two that touch this asset. The runs endpoint cannot
+   * filter by asset (ADR-0009), so the only way to keep that bounded is to ask fewer directives:
+   * the ones configured to run at ingest, the ones this entry already records a run from, and the
+   * ones currently on screen. A run started from this tab is recorded at creation, so it enters
+   * the second set immediately and stays there even if an admin later drops it from the config.
+   *
+   * Sorted and joined because the identity matters: `loadDirectiveRuns` is a dependency of the
+   * poll effect, so a set that merely re-orders would re-arm the 6 s timer before it ever fired.
    */
   const directiveIdKey = useMemo(
     () =>
-      Array.from(
-        new Set([...defaultDirectiveIds, ...directives.map((directive) => directive.id)])
-      ).join(','),
-    [defaultDirectiveIds, directives]
+      Array.from(new Set([...defaultDirectiveIds, ...recordedDirectiveIds, ...liveDirectiveIds]))
+        .sort()
+        .join(','),
+    [defaultDirectiveIds, recordedDirectiveIds, liveDirectiveIds]
   );
 
   const loadDirectiveRuns = useCallback(async () => {
-    if (!muxApi || !assetId) return;
+    if (!muxApi) return;
     const directiveIds = directiveIdKey ? directiveIdKey.split(',') : [];
     if (directiveIds.length === 0) return;
     if (isLoadingRef.current) return;

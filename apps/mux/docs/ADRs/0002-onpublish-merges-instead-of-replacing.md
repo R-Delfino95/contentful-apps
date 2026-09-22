@@ -159,3 +159,43 @@ Alternatives considered:
   tests assert the two agree by iteration rather than by a list someone has to maintain twice.
 - The duplicated predicate is still duplicated. It is now duplicated *on purpose*, named the same
   on both sides, with each copy pointing at the other.
+
+## Amendment, 2026-09-21: a 404 from Mux clears the whole field, and that is the intended behaviour
+
+Recorded here because this is the one place the function does **not** merge, which is a
+qualification of the decision above rather than a bug against it.
+
+`updateEntryFieldWithMuxAsset` reads the field's `assetId` and calls
+`GET /video/v1/assets/{id}`. On a 404 it does not merge anything — it sets the entire field to
+`undefined` and publishes that. Every key goes, including the three that ADR-0010 says exist
+nowhere else: `robotsJobs`, `robotsOutputs` and `robotsDirectiveRuns`.
+
+A previous pass flagged this as an open product question, because the 404 branch does not ask
+*why* the asset is missing. It fires whether or not a delete was the pending action that brought
+the function here. So the reachable case is not "the editor deleted the video": it is an asset
+deleted from the Mux dashboard, followed by a publish carrying any unrelated pending action — a
+caption removal, a metadata edit — which then takes the Robots history with it.
+
+**The decision is that this is correct and stays.** The field is a mirror of a Mux asset. If the
+asset is gone from Mux there is no asset for the entry to describe, and no reason for its data to
+outlive it. Keeping `robotsJobs` and `robotsOutputs` against a deleted asset would leave an entry
+holding provenance and outputs for a video that cannot be played, resynced or re-run, and every
+consumer reading the field would have to learn to distinguish that state from a live one.
+ADR-0010's claim is that this data is unrecoverable, which is an argument for not losing it by
+*accident* — a dropped write, a pasted asset ID, an unmount. Losing it because the thing it
+describes was deliberately deleted is not that.
+
+What makes it safe enough to leave alone is that the 404 is authoritative and the clear is
+therefore never speculative: `fetchMuxAsset` distinguishes 404 from every other failure and
+throws on the rest, and the throw is caught per field, so a Mux outage or a bad token leaves the
+field exactly as it was. Only a positive "this asset does not exist" clears anything.
+
+**The related limitation, which does not change.** The 404 is decided from **one** locale and
+applied to **all** of them: the loop reads `Object.entries(fieldValue)[0]` to find an `assetId`,
+and on a 404 assigns `undefined` to the whole field rather than to that locale. A field whose
+locales point at different Mux assets therefore loses the live ones alongside the dead one. This
+is the same first-locale-only shape as the pending-action scan documented above, in a different
+function, and it is left for the same reason: the fix belongs with that one, as its own change,
+not smuggled in beside a decision to keep existing behaviour.
+
+No code changes with this amendment.

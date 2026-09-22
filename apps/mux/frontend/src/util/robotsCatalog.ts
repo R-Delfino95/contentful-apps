@@ -1560,6 +1560,19 @@ export function validateParams(
     }
   }
 
+  // `generate-chapters` reads the transcript and has no visual fallback — its own
+  // `language_code` is labelled "Caption track language", which is the catalog saying the
+  // workflow picks a *caption track*. With none on the asset there is nothing to chapter, the
+  // POST is accepted, and the job errors minutes later, by which time the editor has been told
+  // the run started and has been charged for finding out. Same prerequisite, same mechanism and
+  // same shape of message as `find-key-moments` above; the difference is that chapters has no
+  // `use_shots` to turn on, so the only way forward is captions.
+  if (definition.key === 'generate-chapters' && context.hasCaptions === false) {
+    errors.push(
+      'This video has no caption track. Chapters are generated from the transcript, so generate captions first.'
+    );
+  }
+
   // `find-key-moments` requires both bounds together or neither.
   if (definition.key === 'find-key-moments') {
     const min = values['target_duration_ms.min'];

@@ -42,6 +42,22 @@ export const ROBOTS_STALE_JOB_MS = 6 * 60 * 60 * 1000;
 export const ROBOTS_POLL_INTERVAL_MS = 6000;
 
 /**
+ * How many poll ticks an unconfirmed create keeps the loop alive for, so it can be looked for.
+ * Shared by both guards: an unconfirmed job and an unconfirmed directive run.
+ *
+ * ADR-0003 says an unresolved create is re-checked "on every subsequent refresh". Refreshes only
+ * happen while something is in flight, and an unconfirmed create is the one case where nothing
+ * is — so the loop has to be armed by the guard itself, and then bounded, or an open tab polls
+ * forever over a job that never started.
+ *
+ * Ten ticks is a minute at the cadence above. A job that Mux did create is listed within seconds
+ * of the create returning, and `findJobByPassthrough` opens the newest few candidates whatever
+ * their status, so it does not have to wait for the job to finish. What the bound ends is the
+ * looking; the guard is not time-based and never lifts on its own — see `runDisabledReason`.
+ */
+export const ROBOTS_UNCONFIRMED_RECHECK_TICKS = 10;
+
+/**
  * The install a `passthrough` names: this space, this environment, this entry.
  *
  * Taken from `sdk.ids`. `environment` is the real environment id and never `environmentAlias` —
@@ -324,6 +340,10 @@ export async function createRobotsJobWithReconciliation(
  * Two minutes covers the whole hazard window — `createWithResponse` gives up after ~30 s, and a
  * cold-started function that lost its caller has already reached Mux by then — while being far
  * too short to sweep up an unrelated run of the same directive on the same asset.
+ *
+ * It also has to outlast `ROBOTS_UNCONFIRMED_RECHECK_TICKS`, which is a minute: the per-refresh
+ * re-check measures the window from each attempt, so a shorter one would stop matching a run
+ * started at the click while the tab was still looking for it.
  */
 const ROBOTS_DIRECTIVE_RUN_ADOPTION_WINDOW_MS = 2 * 60 * 1000;
 
@@ -445,17 +465,20 @@ export function cachedRobotsCapability(): RobotsCapability | undefined {
   return capabilityCache;
 }
 
-export function resetRobotsCapabilityCache(): void {
-  capabilityCache = undefined;
+/**
+ * Fills the session cache from a read that was happening anyway.
+ *
+ * There used to be a `resolveRobotsCapability` here that filled the cache with a dedicated
+ * `listRobotsJobs({ limit: 1 })` probe, awaited before the tab read anything it actually wanted.
+ * The panel's own job list answers the same question — a success means enabled, a 401/403 says
+ * which kind of unavailable — so the probe was a serialized round trip spent learning something
+ * the next call would have said anyway. The cache is still worth having and is still filled once
+ * per browser session; it is just filled by the read the editor is waiting for.
+ */
+export function recordRobotsCapability(capability: RobotsCapability): void {
+  capabilityCache = capability;
 }
 
-export async function resolveRobotsCapability(muxApi: MuxApiService): Promise<RobotsCapability> {
-  if (capabilityCache) return capabilityCache;
-  try {
-    await muxApi.listRobotsJobs({ limit: 1 });
-    capabilityCache = { state: 'enabled' };
-  } catch (error) {
-    capabilityCache = capabilityFromError(error);
-  }
-  return capabilityCache;
+export function resetRobotsCapabilityCache(): void {
+  capabilityCache = undefined;
 }

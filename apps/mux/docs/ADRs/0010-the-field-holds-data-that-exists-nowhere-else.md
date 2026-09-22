@@ -12,6 +12,12 @@ losing any of it costs a resync and nothing else. That assumption is load-bearin
 it is why the asset poll can rebuild the mirror several times a second, why a failed write is
 survivable, and why nobody has ever had to think hard about durability here.
 
+> **See also, 2026-09-21.** "Exists nowhere else" is an argument against losing this data by
+> accident, not a guarantee that it outlives its asset. `onPublish` clears the whole field —
+> Robots keys included — when `GET /video/v1/assets/{id}` returns a 404, and that is decided and
+> kept behaviour: see ADR-0002's amendment of the same date, which also records the first-locale
+> limitation attached to it.
+
 Robots broke the assumption. `robotsJobs` and `robotsOutputs` are written **only** by the browser,
 from information that is not recoverable anywhere else: `GET /robots/v0/jobs` returns summaries
 with no `passthrough`, so a job's provenance exists only in the record we wrote (ADR-0005); a
