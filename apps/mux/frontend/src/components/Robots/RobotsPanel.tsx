@@ -22,19 +22,23 @@ import {
   RobotsUnconfirmedDirectiveRunError,
   activeDirectiveRuns,
   activeJobs,
+  advisoryFromError,
   applyRobotsDirectiveRunsToValue,
   applyRobotsJobsToValue,
   cachedRobotsCapability,
   capabilityFromError,
   createRobotsDirectiveRunWithReconciliation,
   createRobotsJobWithReconciliation,
+  directiveRunRefsFromJobs,
   findJobByPassthrough,
   findRecentDirectiveRun,
   jobIdsFromDirectiveRuns,
+  jobsClaimedByEntry,
   recordRobotsDirectiveRun,
   unfinishedJobRecords,
 } from '../../util/robots';
 import {
+  RobotsAdvisory,
   RobotsDirective,
   RobotsDirectiveRun,
   RobotsJob,
@@ -156,6 +160,14 @@ const RobotsPanelForAsset: FC<RobotsPanelProps & { assetId: string }> = ({
    * so there is no token to match and adoption is by asset plus recency. See ADR-0003.
    */
   const [pendingDirectiveRun, setPendingDirectiveRun] = useState<string | undefined>();
+  /**
+   * A limit a refused run ran into — units, today. Shown over the tab rather than instead of it,
+   * because a cheaper run may still fit, and cleared by the next run Mux accepts: nothing else is
+   * evidence either way, since only a create is checked against the units left.
+   */
+  const [advisory, setAdvisory] = useState<RobotsAdvisory | undefined>();
+  /** Jobs this session created, whose record can lag the list — see `startedElsewhereIds`. */
+  const [startedHereIds, setStartedHereIds] = useState<Set<string>>(new Set());
 
   const isMountedRef = useRef(true);
   const pollTimerRef = useRef<ReturnType<typeof setTimeout>>();
@@ -238,7 +250,6 @@ const RobotsPanelForAsset: FC<RobotsPanelProps & { assetId: string }> = ({
   const {
     jobs,
     capability,
-    setCapability,
     isLoading,
     setIsLoading,
     loadError,
@@ -257,13 +268,18 @@ const RobotsPanelForAsset: FC<RobotsPanelProps & { assetId: string }> = ({
     rememberJobDetail,
   } = useRobotsJobDetails(muxApi, jobs, isMountedRef);
 
-  const { directiveRuns, loadDirectiveRuns, addDirectiveRun } = useRobotsDirectiveRuns({
-    muxApi,
-    assetId,
-    defaultDirectiveIds,
-    recordedRuns: value?.robotsDirectiveRuns,
-    isMountedRef,
-  });
+  /** The runs this asset's jobs name, which is how a run started outside Contentful is found. */
+  const runsNamedByJobs = useMemo(() => directiveRunRefsFromJobs(enrichedJobs), [enrichedJobs]);
+
+  const { directiveRuns, claimingRuns, loadDirectiveRuns, addDirectiveRun } =
+    useRobotsDirectiveRuns({
+      muxApi,
+      assetId,
+      defaultDirectiveIds,
+      recordedRuns: value?.robotsDirectiveRuns,
+      runsNamedByJobs,
+      isMountedRef,
+    });
 
   const loadDirectives = useCallback(async () => {
     if (!muxApi) return;
@@ -459,10 +475,11 @@ const RobotsPanelForAsset: FC<RobotsPanelProps & { assetId: string }> = ({
   }, [muxApi, assetId, pendingDirectiveRun, pollNonce, updateField, addDirectiveRun]);
 
   /** The newest reads, for the persist mutator to apply against. See the effect below. */
-  const latestPersistInputRef = useRef<{ jobs: RobotsJob[]; runs: RobotsDirectiveRun[] }>({
-    jobs: [],
-    runs: [],
-  });
+  const latestPersistInputRef = useRef<{
+    jobs: RobotsJob[];
+    runs: RobotsDirectiveRun[];
+    claimingRuns: RobotsDirectiveRun[];
+  }>({ jobs: [], runs: [], claimingRuns: [] });
 
   /**
    * Persist whatever the latest read says.
@@ -476,18 +493,20 @@ const RobotsPanelForAsset: FC<RobotsPanelProps & { assetId: string }> = ({
    */
   useEffect(() => {
     if (enrichedJobs.length === 0 && directiveRuns.length === 0) return;
-    latestPersistInputRef.current = { jobs: enrichedJobs, runs: directiveRuns };
+    latestPersistInputRef.current = { jobs: enrichedJobs, runs: directiveRuns, claimingRuns };
     updateField((current) => {
       // Read at apply time, not at effect time. A write parked behind the publish gate re-applies
       // up to 90 s later, and `mergeJobRecords` lets an incoming record win — so a mutator holding
       // the snapshot from the tick it was queued on would write a stale `processing` over a stored
       // `completed`. The ref always holds the newest read, so a replay is idempotent.
-      const { jobs: latestJobs, runs } = latestPersistInputRef.current;
+      const { jobs: latestJobs, runs, claimingRuns: claiming } = latestPersistInputRef.current;
       // Runs first: their `node_states` name the jobs they dispatched, and the job pass reads
       // those ids back for ownership. This only ever *updates* runs the entry already records — a
-      // run is added at creation and nowhere else.
+      // run is added at creation and nowhere else — so every run it can see is safe to pass.
       const withRuns = applyRobotsDirectiveRunsToValue(current, runs);
-      return applyRobotsJobsToValue(withRuns, latestJobs, jobIdsFromDirectiveRuns(runs), {
+      // Claiming is narrower: a run of a directive this entry has no tie to was started somewhere
+      // else, and its jobs are shown, not stored (ADR-0009).
+      return applyRobotsJobsToValue(withRuns, latestJobs, jobIdsFromDirectiveRuns(claiming), {
         // The prefix identifies the app, not the install, so it proves nothing on its own; the
         // scope segment is what says the job was started from this space, environment and entry.
         // Passing it lets a job we created but never managed to record be adopted when it
@@ -502,7 +521,7 @@ const RobotsPanelForAsset: FC<RobotsPanelProps & { assetId: string }> = ({
       // publish gate and then dropped at unmount rejects, and the next poll re-derives it.
       console.warn('[robots] Could not persist the latest job state', error);
     });
-  }, [enrichedJobs, directiveRuns, updateField, scope]);
+  }, [enrichedJobs, directiveRuns, claimingRuns, updateField, scope]);
 
   const inFlight = useMemo(() => activeJobs(enrichedJobs), [enrichedJobs]);
   /**
@@ -514,11 +533,28 @@ const RobotsPanelForAsset: FC<RobotsPanelProps & { assetId: string }> = ({
    */
   const activeRuns = useMemo(() => activeDirectiveRuns(directiveRuns), [directiveRuns]);
 
-  /** Which rows the entry actually holds, so a dashboard job's row can say it is not stored. */
-  const storedJobIds = useMemo(
-    () => new Set((value?.robotsJobs ?? []).map((record) => record.id)),
-    [value?.robotsJobs]
-  );
+  /**
+   * Rows the entry will not hold, so each can say why. Read off the rule the persist effect
+   * stores by rather than off what is stored: a job of ours is briefly unstored after every
+   * create, and for up to 90 s behind the publish gate, and "started elsewhere" would be false
+   * for it. The jobs this session created count as ours for the same reason.
+   */
+  const startedElsewhereIds = useMemo(() => {
+    const claimed = new Set(
+      jobsClaimedByEntry(value, enrichedJobs, jobIdsFromDirectiveRuns(claimingRuns), {
+        scope,
+        ownJobIds: startedHereIds,
+      }).map((job) => job.id)
+    );
+    return new Set(enrichedJobs.filter((job) => !claimed.has(job.id)).map((job) => job.id));
+  }, [
+    value?.robotsJobs,
+    value?.robotsDirectiveRuns,
+    enrichedJobs,
+    claimingRuns,
+    scope,
+    startedHereIds,
+  ]);
 
   /**
    * Poll while anything is live — on any tab.
@@ -592,6 +628,18 @@ const RobotsPanelForAsset: FC<RobotsPanelProps & { assetId: string }> = ({
     loadDirectiveRuns,
   ]);
 
+  /**
+   * What a refused create means beyond the run it refused. Never a capability: Mux refuses
+   * `translate-audio` on the free plan while every other workflow runs, so a create is no answer
+   * about the account. A refusal that could mean the account lost Robots asks the list read, which
+   * is what decides that; one about units becomes the warning.
+   */
+  const noteRefusal = (error: MuxApiError) => {
+    const refusedFor = advisoryFromError(error);
+    if (refusedFor) setAdvisory(refusedFor);
+    else if (capabilityFromError(error)) void refresh({ silent: true });
+  };
+
   const handleRun = async (workflow: RobotsWorkflow, parameters: Record<string, unknown>) => {
     if (!muxApi) return;
     setIsStartingRun(true);
@@ -604,6 +652,8 @@ const RobotsPanelForAsset: FC<RobotsPanelProps & { assetId: string }> = ({
         scope
       );
       if (!isMountedRef.current) return;
+      setStartedHereIds((previous) => new Set(previous).add(job.id));
+      setAdvisory(undefined);
 
       // Recorded now, while we still hold the create response — the only moment ownership is
       // unambiguous, because the job *list* carries no passthrough. Caught separately on purpose:
@@ -637,10 +687,8 @@ const RobotsPanelForAsset: FC<RobotsPanelProps & { assetId: string }> = ({
         sdk.notifier.warning(error.message);
         await refresh({ silent: true });
       } else if (error instanceof MuxApiError) {
-        if (error.status === 401 || error.status === 403) {
-          setCapability(capabilityFromError(error));
-        }
         sdk.notifier.error(error.message);
+        noteRefusal(error);
       } else {
         sdk.notifier.error('Could not start this Robots job.');
       }
@@ -682,6 +730,7 @@ const RobotsPanelForAsset: FC<RobotsPanelProps & { assetId: string }> = ({
     try {
       const run = await createRobotsDirectiveRunWithReconciliation(muxApi, directiveId, assetId);
       if (!isMountedRef.current) return;
+      setAdvisory(undefined);
       sdk.notifier.success('Directive run started.');
 
       // The only place a run is added to the entry. Without it, ownership of everything this run
@@ -716,9 +765,12 @@ const RobotsPanelForAsset: FC<RobotsPanelProps & { assetId: string }> = ({
         await loadDirectiveRuns();
         return;
       }
-      sdk.notifier.error(
-        error instanceof MuxApiError ? error.message : 'Could not start this directive run.'
-      );
+      if (error instanceof MuxApiError) {
+        sdk.notifier.error(error.message);
+        noteRefusal(error);
+      } else {
+        sdk.notifier.error('Could not start this directive run.');
+      }
     } finally {
       if (isMountedRef.current) setIsStartingDirectiveRun(false);
     }
@@ -728,7 +780,7 @@ const RobotsPanelForAsset: FC<RobotsPanelProps & { assetId: string }> = ({
   // this panel's own read, or from the session cache a previous entry filled — is a final answer,
   // so there is nothing to wait for and the effect above does not fetch.
   if (capability && capability.state !== 'enabled') {
-    return <RobotsCapabilityNote state={capability.state} message={capability.message} />;
+    return <RobotsCapabilityNote state={capability.state} termsUrl={capability.termsUrl} />;
   }
 
   // Not `&& isLoading`: effects run after render, so the first render with `isActive` true has not
@@ -843,9 +895,11 @@ const RobotsPanelForAsset: FC<RobotsPanelProps & { assetId: string }> = ({
         </Box>
       )}
 
+      {advisory && <RobotsCapabilityNote state={advisory} />}
+
       <RobotsJobTable
         jobs={enrichedJobs}
-        storedJobIds={storedJobIds}
+        startedElsewhereIds={startedElsewhereIds}
         detailedJobIds={detailedJobIds}
         unreadableJobIds={failedDetailIds}
         onCancel={handleCancel}

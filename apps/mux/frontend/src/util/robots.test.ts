@@ -1,20 +1,23 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { MuxApiError } from './muxApi';
+import { MuxApiError, muxApiErrorFromResponse } from './muxApi';
 import {
   RobotsUnconfirmedCreateError,
   RobotsUnconfirmedDirectiveRunError,
   activeDirectiveRuns,
   activeJobs,
+  advisoryFromError,
   applyRobotsDirectiveRunsToValue,
   applyRobotsJobsToValue,
   buildJobPassthrough,
   capabilityFromError,
   createRobotsDirectiveRunWithReconciliation,
   createRobotsJobWithReconciliation,
+  directiveRunRefsFromJobs,
   findRecentDirectiveRun,
   isOwnPassthrough,
   isPluginOriginatedJob,
   jobIdsFromDirectiveRuns,
+  jobsClaimedByEntry,
   jobsNeedingDetail,
   mergeDirectiveRunRecords,
   mergeJobRecords,
@@ -155,30 +158,155 @@ describe('isOwnPassthrough', () => {
   });
 });
 
-describe('capabilityFromError', () => {
-  it('reads units-exhausted from the forwarded error type, not the status', () => {
-    const error = new MuxApiError('Limit reached', 403, 'robots_units_limit_exceeded');
-    expect(capabilityFromError(error)).toEqual({
-      state: 'units-exhausted',
-      message: 'Limit reached',
-    });
-  });
+/**
+ * The terms-not-accepted 403, exactly as Mux sends it. Same `type` as every other 403 of its kind,
+ * so the status and type are what classify it; the message is only where the page is named.
+ */
+const TERMS_PAGE = 'https://dashboard.mux.com/organizations/org-1/environments/env-1/robots/jobs';
+const termsNotAccepted = (
+  message = `Go to your Robots page in the Mux Dashboard to accept the terms: ${TERMS_PAGE}`
+) => new MuxApiError(message, 403, 'forbidden');
 
+describe('capabilityFromError', () => {
   it('reads a missing scope from its own error type', () => {
     const error = new MuxApiError('Missing scope', 403, 'insufficient_scope');
-    expect(capabilityFromError(error).state).toBe('scope-missing');
+    expect(capabilityFromError(error)?.state).toBe('scope-missing');
   });
 
   it('treats a 401 as a token problem', () => {
-    expect(capabilityFromError(new MuxApiError('Unauthorized', 401)).state).toBe('scope-missing');
+    expect(capabilityFromError(new MuxApiError('Unauthorized', 401))?.state).toBe('scope-missing');
   });
 
   it('falls back to not-enabled for a bare 403', () => {
-    expect(capabilityFromError(new MuxApiError('Forbidden', 403)).state).toBe('not-enabled');
+    expect(capabilityFromError(new MuxApiError('Forbidden', 403))?.state).toBe('not-enabled');
   });
 
-  it('falls back to not-enabled for a non-Mux failure', () => {
-    expect(capabilityFromError(new Error('offline')).state).toBe('not-enabled');
+  it('reads the terms-not-accepted 403 as Robots being off, never as a missing scope', () => {
+    // The config screen used to answer every 403 with "generate a new token", which is advice a
+    // new token cannot follow: it would be refused exactly the same way.
+    expect(capabilityFromError(termsNotAccepted())).toEqual({
+      state: 'not-enabled',
+      termsUrl: TERMS_PAGE,
+    });
+  });
+
+  it('keeps the page Mux named, and only the page, when a sentence ends after it', () => {
+    expect(capabilityFromError(termsNotAccepted(`Accept the terms at ${TERMS_PAGE}.`))).toEqual({
+      state: 'not-enabled',
+      termsUrl: TERMS_PAGE,
+    });
+  });
+
+  it('links nothing it cannot vouch for, and still classifies the same', () => {
+    // No page named, or a page somewhere other than the Mux dashboard: the note falls back to the
+    // dashboard itself rather than to whatever the message happened to contain.
+    expect(capabilityFromError(termsNotAccepted('Robots is not enabled.'))).toEqual({
+      state: 'not-enabled',
+    });
+    expect(
+      capabilityFromError(termsNotAccepted('See https://example.com/dashboard.mux.com/robots'))
+    ).toEqual({ state: 'not-enabled' });
+    expect(
+      capabilityFromError(termsNotAccepted('See https://dashboard.mux.com.example.com/robots'))
+    ).toEqual({ state: 'not-enabled' });
+  });
+
+  it('says nothing about the account when Mux refuses one workflow on this plan', () => {
+    // translate-audio on the free plan: every other workflow still runs.
+    const refused = new MuxApiError(
+      'Workflow is not available on the free plan',
+      403,
+      'robots_workflow_not_available'
+    );
+    expect(capabilityFromError(refused)).toBeUndefined();
+  });
+
+  it('says nothing about the account when a run would not fit the units left', () => {
+    const refused = new MuxApiError(
+      'Robots units limit exceeded',
+      403,
+      'robots_units_limit_exceeded'
+    );
+    expect(capabilityFromError(refused)).toBeUndefined();
+  });
+
+  it('says nothing about the account for a 403 whose type it does not know', () => {
+    // The failure it leans towards is a toast on one run, not a tab replaced by an explainer.
+    expect(capabilityFromError(new MuxApiError('No', 403, 'robots_something_new'))).toBeUndefined();
+  });
+
+  it('says nothing about the account for anything else', () => {
+    expect(capabilityFromError(new Error('offline'))).toBeUndefined();
+    expect(
+      capabilityFromError(new MuxApiError('Invalid', 422, 'validation_error'))
+    ).toBeUndefined();
+    expect(capabilityFromError(new MuxApiError('Down', 500))).toBeUndefined();
+  });
+});
+
+describe('advisoryFromError', () => {
+  it('reads a units refusal as a warning', () => {
+    expect(
+      advisoryFromError(
+        new MuxApiError('Robots units limit exceeded', 403, 'robots_units_limit_exceeded')
+      )
+    ).toBe('units-exhausted');
+  });
+
+  it('reads nothing else as one', () => {
+    expect(
+      advisoryFromError(new MuxApiError('No', 403, 'robots_workflow_not_available'))
+    ).toBeUndefined();
+    expect(advisoryFromError(termsNotAccepted())).toBeUndefined();
+    expect(advisoryFromError(new Error('robots_units_limit_exceeded'))).toBeUndefined();
+  });
+});
+
+describe('muxApiErrorFromResponse', () => {
+  /** What `fetch` hands the config screen, reduced to the two members this reads. */
+  const response = (status: number, body: unknown) =>
+    ({
+      ok: false,
+      status,
+      json: async () => {
+        if (body === undefined) throw new SyntaxError('Unexpected end of JSON input');
+        return body;
+      },
+    } as unknown as Response);
+
+  it('builds the error muxProxy would, so the config screen classifies with the same function', async () => {
+    const error = await muxApiErrorFromResponse(
+      response(403, {
+        error: {
+          type: 'forbidden',
+          messages: [
+            `Go to your Robots page in the Mux Dashboard to accept the terms: ${TERMS_PAGE}`,
+          ],
+        },
+      })
+    );
+
+    expect(error).toBeInstanceOf(MuxApiError);
+    expect(error.status).toBe(403);
+    expect(error.errorType).toBe('forbidden');
+    expect(capabilityFromError(error)).toEqual({ state: 'not-enabled', termsUrl: TERMS_PAGE });
+  });
+
+  it('reads the singular message the reference documents, and joins several', async () => {
+    expect(
+      (await muxApiErrorFromResponse(response(403, { error: { message: 'One' } }))).message
+    ).toBe('One');
+    expect(
+      (await muxApiErrorFromResponse(response(400, { error: { messages: ['One', 'Two'] } })))
+        .message
+    ).toBe('One Two');
+  });
+
+  it('still says who refused it when the body is not what it expects', async () => {
+    const error = await muxApiErrorFromResponse(response(401, undefined));
+    expect(error.message).toBe('Mux rejected this request (HTTP 401)');
+    expect(error.errorType).toBeUndefined();
+    expect(capabilityFromError(error)?.state).toBe('scope-missing');
   });
 });
 
@@ -197,8 +325,47 @@ describe('the session capability cache', () => {
   });
 
   it('remembers a negative answer too', () => {
-    recordRobotsCapability(capabilityFromError(new MuxApiError('Not enabled', 403)));
+    recordRobotsCapability({ state: 'not-enabled' });
     expect(cachedRobotsCapability()?.state).toBe('not-enabled');
+  });
+});
+
+describe('directiveRunRefsFromJobs', () => {
+  it('names each run once, from the jobs whose detail carries it', () => {
+    // A directive's jobs all point back at the same run, so one run read covers all of them.
+    const refs = directiveRunRefsFromJobs([
+      job({ id: 'rjob_a', directive: { id: 'drv_1', run_id: 'drvrun_1' } }),
+      job({ id: 'rjob_b', directive: { id: 'drv_1', run_id: 'drvrun_1' } }),
+      job({ id: 'rjob_c', directive: { id: 'drv_2', run_id: 'drvrun_2' } }),
+    ]);
+
+    expect(refs).toEqual([
+      { directiveId: 'drv_1', runId: 'drvrun_1' },
+      { directiveId: 'drv_2', runId: 'drvrun_2' },
+    ]);
+  });
+
+  it('names nothing for a job a direct POST created, or one whose detail was never read', () => {
+    expect(directiveRunRefsFromJobs([job(), foreignJob()])).toEqual([]);
+  });
+});
+
+describe('jobsClaimedByEntry', () => {
+  it('is exactly what applyRobotsJobsToValue stores', () => {
+    // One rule behind two things: what the entry holds, and which rows the table marks as started
+    // elsewhere. If they ever disagreed, a row would say "not saved" about a job that is.
+    const value = baseValue({
+      robotsDirectiveRuns: [{ runId: 'drvrun_1', directiveId: 'drv_1', jobIds: ['rjob_run'] }],
+    });
+    const jobs = [job(), foreignJob(), job({ id: 'rjob_run', passthrough: undefined })];
+
+    const claimed = jobsClaimedByEntry(value, jobs, undefined, ours).map(({ id }) => id);
+    const stored = applyRobotsJobsToValue(value, jobs, undefined, ours)?.robotsJobs?.map(
+      ({ id }) => id
+    );
+
+    expect(claimed).toEqual(['rjob_1', 'rjob_run']);
+    expect([...(stored ?? [])].sort()).toEqual([...claimed].sort());
   });
 });
 

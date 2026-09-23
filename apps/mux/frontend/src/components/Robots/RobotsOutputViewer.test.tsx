@@ -519,6 +519,28 @@ describe('an errored job', () => {
     expect(await screen.findByText('This job failed without a message.')).toBeInTheDocument();
   });
 
+  it('shows a reason it was handed without reading the job again, so a failed re-read cannot hide it', async () => {
+    // The table no longer prints the reason, so this is the only place it appears — and the
+    // panel usually already holds it, from the terminal detail it reads in the background.
+    const getRobotsJob = vi.fn(async () => {
+      throw new Error('502 from the app-action bridge');
+    });
+    render(
+      <RobotsOutputViewer
+        job={job({
+          status: 'errored',
+          errors: [{ type: 'invalid_input', message: 'The audio track was too quiet' }],
+        })}
+        muxApi={{ getRobotsJob } as never}
+        onClose={vi.fn()}
+      />
+    );
+
+    expect(await screen.findByText('The audio track was too quiet')).toBeInTheDocument();
+    expect(screen.queryByText('502 from the app-action bridge')).toBeNull();
+    expect(getRobotsJob).not.toHaveBeenCalled();
+  });
+
   it('keeps every message on the raw tab, since the shaped note only shows the first', async () => {
     showErrored(
       job({

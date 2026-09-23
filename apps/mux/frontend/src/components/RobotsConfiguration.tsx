@@ -13,9 +13,11 @@ import {
 } from '@contentful/f36-components';
 import { CycleIcon, PlusIcon } from '@contentful/f36-icons';
 import ExternalLink from './ExternalLink';
+import RobotsCapabilityNote from './Robots/RobotsCapabilityNote';
 import ApiClient from '../util/apiClient';
+import { muxApiErrorFromResponse } from '../util/muxApi';
 import { RobotsDirective } from '../util/robotsTypes';
-import { ROBOTS_DOCS_URL } from '../util/robots';
+import { ROBOTS_DOCS_URL, capabilityFromError } from '../util/robots';
 
 /**
  * The Robots section of the app configuration screen: which directives run on every new upload.
@@ -53,6 +55,7 @@ const RobotsConfiguration: FC<RobotsConfigurationProps> = ({
   const [directives, setDirectives] = useState<RobotsDirective[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | undefined>();
+  const [unavailable, setUnavailable] = useState<ReturnType<typeof capabilityFromError>>();
   const [hasTried, setHasTried] = useState(false);
   const [manualId, setManualId] = useState('');
 
@@ -62,6 +65,7 @@ const RobotsConfiguration: FC<RobotsConfigurationProps> = ({
     if (!hasCredentials) return;
     setIsLoading(true);
     setLoadError(undefined);
+    setUnavailable(undefined);
 
     const apiClient = new ApiClient(tokenId as string, tokenSecret as string);
     const collected: RobotsDirective[] = [];
@@ -72,18 +76,13 @@ const RobotsConfiguration: FC<RobotsConfigurationProps> = ({
           `/robots/v0/directives?limit=${PAGE_SIZE}&page=${page}`
         );
 
-        if (response.status === 401) {
-          setLoadError('Those Mux credentials were rejected. Check the token and secret above.');
-          break;
-        }
-        if (response.status === 403) {
-          setLoadError(
-            'This token cannot read Robots directives. It needs the robots:* scope, which cannot be added to an existing token — generate a new one.'
-          );
-          break;
-        }
         if (!response.ok) {
-          setLoadError(`Mux returned ${response.status} when listing directives.`);
+          // The Robots tab's own classifier, not a second one keyed on the status alone: that
+          // read every 403 as a missing scope, and told an account that had only not accepted
+          // the terms to throw away a working token.
+          const capability = capabilityFromError(await muxApiErrorFromResponse(response));
+          if (capability) setUnavailable(capability);
+          else setLoadError(`Mux returned ${response.status} when listing directives.`);
           break;
         }
 
@@ -182,6 +181,10 @@ const RobotsConfiguration: FC<RobotsConfigurationProps> = ({
             </Box>
           )}
 
+          {unavailable && (
+            <RobotsCapabilityNote state={unavailable.state} termsUrl={unavailable.termsUrl} />
+          )}
+
           {directives.map((directive) => (
             <Checkbox
               key={directive.id}
@@ -196,7 +199,7 @@ const RobotsConfiguration: FC<RobotsConfigurationProps> = ({
             </Checkbox>
           ))}
 
-          {hasTried && !isLoading && directives.length === 0 && !loadError && (
+          {hasTried && !isLoading && directives.length === 0 && !loadError && !unavailable && (
             <Note variant="neutral">
               This Mux account has no directives yet. Create one in Mux, then reload.
             </Note>

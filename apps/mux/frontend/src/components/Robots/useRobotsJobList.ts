@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState } from 'react';
-import { MuxApiError, MuxApiService } from '../../util/muxApi';
+import { MuxApiService } from '../../util/muxApi';
 import {
   cachedRobotsCapability,
   capabilityFromError,
@@ -13,11 +13,14 @@ import { RobotsCapability, RobotsJob } from '../../util/robotsTypes';
  * The read is not optional and does not go away once records are on the entry: jobs created by a
  * directive at upload, or from the Mux dashboard, were never seen by a browser, so the field
  * mirror is incomplete by construction.
+ *
+ * It is also the only thing that decides capability. A refused run can only ask it again — Mux
+ * refuses one workflow on a plan that runs every other, so a create is no answer about the
+ * account.
  */
 export interface RobotsJobListState {
   jobs: RobotsJob[];
   capability?: RobotsCapability;
-  setCapability: React.Dispatch<React.SetStateAction<RobotsCapability | undefined>>;
   isLoading: boolean;
   setIsLoading: React.Dispatch<React.SetStateAction<boolean>>;
   loadError?: string;
@@ -107,10 +110,10 @@ export function useRobotsJobList({
         await onJobsFetched(fetched);
       } catch (error) {
         if (!isMountedRef.current) return;
-        if (error instanceof MuxApiError && (error.status === 401 || error.status === 403)) {
-          const capability = capabilityFromError(error);
-          setCapability(capability);
-          recordRobotsCapability(capability);
+        const unavailable = capabilityFromError(error);
+        if (unavailable) {
+          setCapability(unavailable);
+          recordRobotsCapability(unavailable);
         } else {
           setLoadError(
             error instanceof Error ? error.message : 'Could not load Robots jobs for this video.'
@@ -144,7 +147,6 @@ export function useRobotsJobList({
   return {
     jobs,
     capability,
-    setCapability,
     isLoading,
     setIsLoading,
     loadError,

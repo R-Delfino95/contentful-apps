@@ -1,6 +1,6 @@
 import { FC } from 'react';
-import { Badge, Box, Button, Table, Text, TextLink } from '@contentful/f36-components';
-import { RobotsJob, isTerminalStatus, robotsJobErrorMessage } from '../../util/robotsTypes';
+import { Badge, Box, Button, Table, Text, TextLink, Tooltip } from '@contentful/f36-components';
+import { RobotsJob, isTerminalStatus } from '../../util/robotsTypes';
 import { workflowLabel } from '../../util/robotsCatalog';
 import { formatTimestamp } from '../../util/robotsFormat';
 import EmptyTableNote from './EmptyTableNote';
@@ -51,14 +51,22 @@ export function unitsCell(job: RobotsJob, detail: RobotsJobDetailState): RobotsU
   return { label: 'Not loaded', isLoadable: true };
 }
 
+/**
+ * Why a row carries the "Started elsewhere" badge. It has to hold for every job that gets it —
+ * including one dispatched by a directive this entry neither started nor runs on upload, which is
+ * shown and never stored exactly like a dashboard job.
+ */
+export const STARTED_ELSEWHERE_TOOLTIP =
+  'Started outside this entry — from the Mux dashboard, another entry, or a directive this entry ' +
+  'did not start. It is listed because it ran on this video; it is not saved to this entry.';
+
 interface RobotsJobTableProps {
   jobs: RobotsJob[];
   /**
-   * Ids of the jobs recorded on the entry. Everything else ran somewhere else — usually the Mux
-   * dashboard — and is shown but not stored, so the row says so rather than leaving the editor to
-   * notice the gap in the Data tab.
+   * Ids of the jobs this entry does not claim. They are shown and never stored, so the row says
+   * why rather than leaving the editor to notice the gap in the Data tab.
    */
-  storedJobIds: Set<string>;
+  startedElsewhereIds: Set<string>;
   /** Ids whose full record has been read. See `RobotsJobDetailState`. */
   detailedJobIds: Set<string>;
   /** Ids whose detail read was attempted and failed. */
@@ -85,7 +93,7 @@ const detailState = (
 
 const RobotsJobTable: FC<RobotsJobTableProps> = ({
   jobs,
-  storedJobIds,
+  startedElsewhereIds,
   detailedJobIds,
   unreadableJobIds,
   onCancel,
@@ -113,7 +121,6 @@ const RobotsJobTable: FC<RobotsJobTableProps> = ({
         <Table.Body>
           {jobs.map((job) => {
             const isRunning = job.status === 'pending' || job.status === 'processing';
-            const error = robotsJobErrorMessage(job);
             const units = unitsCell(job, detailState(job, detailedJobIds, unreadableJobIds));
             const isLoadingDetail = loadingDetailIds.includes(job.id);
             const isCancelling = cancellingIds.includes(job.id);
@@ -122,18 +129,14 @@ const RobotsJobTable: FC<RobotsJobTableProps> = ({
               <Table.Row key={job.id}>
                 <Table.Cell>
                   <Text>{workflowLabel(job.workflow)}</Text>
-                  {!storedJobIds.has(job.id) && (
+                  {startedElsewhereIds.has(job.id) && (
                     <Box marginTop="spacingXs">
-                      <Badge variant="secondary">Not saved to this entry</Badge>
+                      <Tooltip content={STARTED_ELSEWHERE_TOOLTIP} placement="top">
+                        <Badge variant="secondary">Started elsewhere</Badge>
+                      </Tooltip>
                     </Box>
                   )}
-                  {error && (
-                    <Box marginTop="spacingXs">
-                      <Text fontColor="red600" fontSize="fontSizeS">
-                        {error}
-                      </Text>
-                    </Box>
-                  )}
+                  {/* No failure reason here: the status says it errored, View output says why. */}
                 </Table.Cell>
                 <Table.Cell>
                   <RobotsStatusBadge kind="job" status={job.status} />

@@ -240,3 +240,71 @@ already unclaimable once its run left the list window.
 names — it just no longer decides what gets polled. The same listing now also labels the upload
 modal's Automation section, which used to render raw ids beside a checkbox asking whether to
 spend money.
+
+## Amendment, 2026-09-23: the runs a video's own jobs name
+
+The amendment above narrowed the runs this tab reads to three sources — directives configured at
+install, directives this entry records a run from, directives already on screen — and recorded
+its loss as "an ingest-dispatched run from a directive an admin removed after the upload". The
+loss was larger. A video imported from Mux, with a directive run on it, listed its jobs and said
+"No directive runs for this video yet": its directive was never configured here and no run was
+recorded, so none of the three sources named it, and only the fan-out over every directive in the
+account had ever found it.
+
+The fan-out is not coming back. The single-job GET names the run that dispatched a job —
+`directive: { id, run_id }`, documented in the API reference and in `@mux/mux-node` as
+`JobDirectiveContext`, absent for a job created by a direct POST, never on the list summary — and
+those are exactly the two ids `GET /robots/v0/directives/{id}/runs/{run_id}` takes. The tab
+already reads that GET for the newest terminal jobs on the asset (ADR-0005), so those jobs name
+the runs worth reading, and each is read once, by id: `directiveRunRefsFromJobs`, then
+`useRobotsDirectiveRuns`.
+
+**Bounded by the asset.** One read per distinct run the asset's jobs name that no listing already
+returned. A finished run is not read again; a running one is re-read at the cadence the listing
+already polls live runs at, and keeps the loop alive the way a listed run does. No directive is
+listed to find it, and a named run does not join the listed set, so nothing about the size of the
+account enters the cost.
+
+**Shown is not stored.** A named run goes through `applyRobotsDirectiveRunsToValue`, which only
+ever updates runs the entry records, so no `robotsDirectiveRuns` key is added to an entry nobody
+started a run from — the rule this ADR's Decision exists for, and the re-draft
+`deriveFieldVersion` guards against. Its jobs are claimed only if its directive is one this entry
+already claims runs of — configured at install, recorded, or started from this tab — which is the
+rule a listed run has always been held to, now independent of how the run was found. A run of any
+other directive is shown, and its jobs are marked as started elsewhere.
+
+**The documented gap narrows.** The Negative consequence above — runs dispatched at ingest are
+hostage to the list window — no longer holds for a configured directive whose run is named by a
+job the tab has read: the window stops mattering, and the jobs are claimed. It still holds for a
+run none of whose jobs are among the newest twenty terminal ones, because nothing names it.
+
+**A run still in progress is found when its first job finishes.** Detail is read for terminal
+jobs only, so until then no job names the run. Accepted, for three reasons. The poll is already
+running for that job, and the read that reveals the run is one the tab makes anyway, so finding
+it costs nothing extra. No read bounded by the asset can find a run before it dispatches anything,
+so a gap exists whatever is done; reading jobs still running would shorten it, not close it. And
+that read — the single-job GET on a job still running — is the one ADR-0003 declined for
+orphans; if it is ever worth making, it serves both, and deserves its own decision.
+
+**The one-pass-at-a-time guard now queues.** `loadDirectiveRuns` dropped a pass asked for while
+another ran, which was harmless while every request covered the same set. Job detail now changes
+the set, and routinely lands while the first listing is still in flight, so the named run went
+unread until something else asked. A request for a different set is served after the running
+pass; a duplicate of it is still dropped, which is what keeps a first open at one listing per
+directive.
+
+### Consequences of this amendment
+
+**Positive.** An imported video shows the automation that ran on it, at a cost set by the video's
+own jobs. The fan-out stays gone. A configured directive's ingest run is claimable after it leaves
+the newest-25 window, as long as one of its jobs has been read.
+
+**Negative.** A run is found only through a job whose detail has been read: one whose first job is
+still running, or whose jobs are all older than the detail window, stays invisible. And claiming
+past the window writes `robotsJobs` to entries the window used to keep it off — the claim ADR-0005
+always intended, reaching entries it did not before, so some existing entries will show Changed
+the next time someone opens their Robots tab.
+
+**Neutral.** The job's `directive` reference is documented, and it is newer than the rest of the
+job shape this app relies on. If it were ever absent, a named run would simply not be found, and
+everything else would behave as it did before this amendment.

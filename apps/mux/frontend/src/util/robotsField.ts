@@ -311,6 +311,29 @@ function applyDirectiveRunRecords(
 }
 
 /**
+ * The jobs this entry claims: what `applyRobotsJobsToValue` stores, and what the job table does
+ * not mark as started elsewhere. One rule for both, so the marker can never disagree with what
+ * the entry will hold.
+ */
+export function jobsClaimedByEntry(
+  value: MuxContentfulObject | undefined,
+  jobs: RobotsJob[],
+  directiveRunJobIds?: Set<string>,
+  options: RobotsOwnershipOptions = {}
+): RobotsJob[] {
+  const recordedJobIds = new Set((value?.robotsJobs ?? []).map((record) => record.id));
+  // Directive-dispatched jobs are claimed from two places: the runs the caller claims, and the
+  // runs this entry recorded when it started them. The second is what keeps a job claimable after
+  // its run has aged out of the newest-25 window the list is capped at, or after the directive
+  // itself has been deleted.
+  const claimedByRuns = new Set([
+    ...(directiveRunJobIds ?? []),
+    ...jobIdsFromRecordedRuns(value?.robotsDirectiveRuns),
+  ]);
+  return jobs.filter((job) => isPluginOriginatedJob(job, claimedByRuns, recordedJobIds, options));
+}
+
+/**
  * The single mutator the Robots tab hands to `updateField`: fold an API read into the stored
  * value, touching nothing else and returning the input untouched when there is nothing new.
  */
@@ -323,18 +346,7 @@ export function applyRobotsJobsToValue(
   if (!value) return value;
 
   // Only what this plugin originated goes on the entry. See `isPluginOriginatedJob`.
-  const recordedJobIds = new Set((value.robotsJobs ?? []).map((record) => record.id));
-  // Directive-dispatched jobs are claimed from two places: the runs currently listed by the API,
-  // and the runs this entry recorded when it started them. The second is what keeps a job
-  // claimable after its run has aged out of the newest-25 window the list is capped at, or after
-  // the directive itself has been deleted.
-  const claimedByRuns = new Set([
-    ...(directiveRunJobIds ?? []),
-    ...jobIdsFromRecordedRuns(value.robotsDirectiveRuns),
-  ]);
-  const ours = jobs.filter((job) =>
-    isPluginOriginatedJob(job, claimedByRuns, recordedJobIds, options)
-  );
+  const ours = jobsClaimedByEntry(value, jobs, directiveRunJobIds, options);
 
   const robotsJobs = mergeJobRecords(value.robotsJobs, ours);
   const robotsOutputs = mergeRobotsOutputs(value.robotsOutputs, ours);
@@ -376,6 +388,28 @@ export function jobsNeedingDetail(
     .slice(0, window)
     .filter((job) => isTerminalStatus(job.status) && !alreadyDetailed.has(job.id))
     .slice(0, limit);
+}
+
+/** A directive run, by the two ids its single-run GET takes. */
+export interface RobotsDirectiveRunRef {
+  directiveId: string;
+  runId: string;
+}
+
+/**
+ * The directive runs these jobs name, once each.
+ *
+ * `directive` is on the single-job GET only, so this sees the jobs whose detail has been read —
+ * which is what bounds reading their runs by the asset rather than by the account.
+ */
+export function directiveRunRefsFromJobs(jobs: RobotsJob[]): RobotsDirectiveRunRef[] {
+  const byRunId = new Map<string, RobotsDirectiveRunRef>();
+  for (const job of jobs) {
+    const directiveId = job.directive?.id;
+    const runId = job.directive?.run_id;
+    if (directiveId && runId && !byRunId.has(runId)) byRunId.set(runId, { directiveId, runId });
+  }
+  return Array.from(byRunId.values());
 }
 
 /**

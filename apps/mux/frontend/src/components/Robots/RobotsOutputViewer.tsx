@@ -122,19 +122,25 @@ const RobotsOutputViewer: FC<RobotsOutputViewerProps> = ({ job, muxApi, onLoaded
 
   const jobId = job?.id;
   const workflow = job?.workflow;
-  /** Present when the caller already holds the full record — a create response, or the panel's cache. */
-  const inlineOutputs = job?.outputs;
+  /**
+   * Whether the caller already holds what this modal would fetch: `outputs` and `errors` exist
+   * only on the single-job GET, so either one means the full record is in hand — a create
+   * response, or the panel's cache. Terminal detail never changes, and for an errored job
+   * re-reading it is a risk as well as a cost: this is the only place its reason is shown, and a
+   * failed re-read would put its own error there instead.
+   */
+  const isHeldInFull = !!job?.outputs || job?.errors !== undefined;
 
   /**
    * Fetch the job in full when the modal opens. The single-job GET is the only place `outputs`
    * lives, and fetching it here means we only pay for the jobs someone opens.
    *
-   * Keyed on what the fetch depends on — id, workflow, whether outputs are already in hand —
+   * Keyed on what the fetch depends on — id, workflow, whether the record is already in hand —
    * rather than on the identity of `job`, which the panel rebuilds on every poll tick. Keying on
    * identity would cancel and restart this fetch on a six-second cadence.
    */
   useEffect(() => {
-    if (!jobId || !workflow || inlineOutputs) return;
+    if (!jobId || !workflow || isHeldInFull) return;
 
     if (!muxApi) {
       setResult({ jobId, message: 'The Mux client is not ready yet.' });
@@ -164,7 +170,7 @@ const RobotsOutputViewer: FC<RobotsOutputViewerProps> = ({ job, muxApi, onLoaded
     return () => {
       cancelled = true;
     };
-  }, [jobId, workflow, inlineOutputs, muxApi, onLoaded]);
+  }, [jobId, workflow, isHeldInFull, muxApi, onLoaded]);
 
   /** A result carrying another id belongs to the job the modal showed before this one. */
   const settled = result?.jobId === jobId ? result : undefined;
@@ -172,7 +178,7 @@ const RobotsOutputViewer: FC<RobotsOutputViewerProps> = ({ job, muxApi, onLoaded
   const shown = settled?.job ?? job;
   const error = settled?.message;
   /** Derived, never latched, so a cancelled request leaves nothing to get stuck on. */
-  const isLoading = !!jobId && !inlineOutputs && !settled;
+  const isLoading = !!jobId && !isHeldInFull && !settled;
 
   return (
     <Modal isShown={!!job} onClose={onClose} size="large">

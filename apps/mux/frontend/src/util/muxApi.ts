@@ -64,7 +64,8 @@ export class MuxApiError extends Error {
   status?: number;
   /**
    * Mux's machine-readable error discriminator, forwarded by `muxProxy`. The Robots tab needs it
-   * to tell a units-exhausted 403 from a missing-scope 403.
+   * to tell Mux refusing one run (`robots_*`) from Robots being off for the account (`forbidden`)
+   * — both are 403s.
    */
   errorType?: string;
 
@@ -84,6 +85,33 @@ export class MuxApiError extends Error {
   get muxAnswered(): boolean {
     return typeof this.status === 'number';
   }
+}
+
+/**
+ * A Mux error response read in the browser, as the same `MuxApiError` `muxProxy` hands the rest of
+ * the app — so the config screen, which calls `api.mux.com` directly, classifies with
+ * `capabilityFromError` rather than a copy of it. The two body shapes are the ones
+ * `readMuxErrorMessage` in `functions/src/muxProxy.ts` reads first: Mux sends `messages`, and its
+ * reference documents `message`.
+ */
+export async function muxApiErrorFromResponse(response: Response): Promise<MuxApiError> {
+  const body: unknown = await response.json().catch(() => undefined);
+  const error = isRecord(body) && isRecord(body.error) ? body.error : undefined;
+  const messages: unknown[] =
+    error && Array.isArray(error.messages) ? error.messages : [error?.message];
+  const text = messages
+    .filter((message): message is string => typeof message === 'string' && message.trim() !== '')
+    .join(' ');
+
+  return new MuxApiError(
+    text || `Mux rejected this request (HTTP ${response.status})`,
+    response.status,
+    typeof error?.type === 'string' ? error.type : undefined
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object';
 }
 
 interface MuxErrorBody {

@@ -1,8 +1,10 @@
 import { MuxApiError, MuxApiService } from './muxApi';
 import {
+  RobotsAdvisory,
   RobotsCapability,
   RobotsDirectiveRun,
   RobotsJob,
+  RobotsUnavailableState,
   RobotsWorkflow,
 } from './robotsTypes';
 
@@ -28,6 +30,8 @@ const APP_VERSION = typeof __MUX_APP_VERSION__ === 'string' ? __MUX_APP_VERSION_
 export const ROBOTS_PRICING_URL = 'https://www.mux.com/docs/pricing/overview#mux-robots-pricing';
 export const ROBOTS_DOCS_URL = 'https://www.mux.com/docs/guides/robots';
 export const ROBOTS_TOKEN_DOCS_URL = 'https://dashboard.mux.com/settings/access-tokens';
+/** No organization or environment in it, so it is right for every account. */
+export const ROBOTS_DASHBOARD_URL = 'https://dashboard.mux.com';
 
 /**
  * How long a job may sit in a non-terminal state before the tab stops waiting on it.
@@ -428,31 +432,52 @@ export async function createRobotsDirectiveRunWithReconciliation(
 }
 
 /**
- * Works out whether this installation can use Robots, from the error a call came back with.
+ * What an error says about whether this installation can use Robots at all — or `undefined`, the
+ * answer for most errors, including every refusal of a single run.
  *
- * Reactive by design: hiding a workflow up front would need entitlement data, which no Robots
- * endpoint exposes. So the tab shows everything and explains the 403 when it arrives.
+ * One classifier, two callers: the Robots tab, whose errors come through `muxProxy`, and the
+ * config screen, which calls `api.mux.com` directly (see `muxApiErrorFromResponse`).
+ *
+ * - **401** is the token: rejected, or without the `robots:*` scope. `insufficient_scope` is
+ *   honoured too, though nothing Mux documents sends it.
+ * - **403 `forbidden`** is Robots not being turned on for the account, which the API reference
+ *   gives as the one meaning of that 403: its terms have not been accepted. The type is the same
+ *   `forbidden` Mux uses for every 403 of that kind, so the status and type classify it and the
+ *   message is read only for the page it names.
+ * - **403 `robots_*`** is Mux refusing one run — this workflow is not on the plan, or it would
+ *   not fit the units left — and says nothing about the account. See `advisoryFromError`.
  */
-export function capabilityFromError(error: unknown): RobotsCapability {
-  if (!(error instanceof MuxApiError)) {
-    return { state: 'not-enabled' };
-  }
+export function capabilityFromError(
+  error: unknown
+): (RobotsCapability & { state: RobotsUnavailableState }) | undefined {
+  if (!(error instanceof MuxApiError)) return undefined;
+  const { status, errorType } = error;
 
-  const type = error.errorType;
-  const message = error.message;
+  if (status === 401 || errorType === 'insufficient_scope') return { state: 'scope-missing' };
+  if (status === 403 && (errorType === undefined || errorType === 'forbidden')) {
+    const termsUrl = dashboardUrlIn(error.message);
+    return termsUrl ? { state: 'not-enabled', termsUrl } : { state: 'not-enabled' };
+  }
+  return undefined;
+}
 
-  if (type === 'robots_units_limit_exceeded') {
-    return { state: 'units-exhausted', message };
-  }
-  // A token predating the `robots:*` scope: the scope cannot be added to an existing token, so
-  // the fix is a new token rather than a settings toggle. Worth its own copy.
-  if (type === 'insufficient_scope' || error.status === 401) {
-    return { state: 'scope-missing', message };
-  }
-  if (error.status === 403) {
-    return { state: 'not-enabled', message };
-  }
-  return { state: 'not-enabled', message };
+/**
+ * What a refused run says about the runs that come after it. A warning, never a capability: the
+ * units check is made per run, so a cheaper workflow can still fit. See ADR-0006.
+ */
+export function advisoryFromError(error: unknown): RobotsAdvisory | undefined {
+  return error instanceof MuxApiError && error.errorType === 'robots_units_limit_exceeded'
+    ? 'units-exhausted'
+    : undefined;
+}
+
+/**
+ * The Mux dashboard page a message names, if it names one. The terms-not-accepted 403 links the
+ * exact organization and environment, which nothing else in the response identifies.
+ */
+function dashboardUrlIn(message: string): string | undefined {
+  // Sentence punctuation after the URL is not part of it.
+  return /https:\/\/dashboard\.mux\.com\/[^\s"'<>]*/.exec(message)?.[0].replace(/[.,;:)]+$/, '');
 }
 
 /**

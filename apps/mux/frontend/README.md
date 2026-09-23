@@ -242,12 +242,17 @@ The **Robots** tab runs Mux AI workflows on the current video and reads the resu
 
 ### Requirements
 
-- Robots must be enabled on the Mux account.
+- Robots must be enabled on the Mux account, which Mux does once its terms are accepted in the
+  dashboard. Until then the tab, and the directive list on the configuration screen, say so and
+  link the page Mux names.
 - The Mux access token needs the **`robots:*` scope**. This scope cannot be added to a token that
   already exists, so an account upgrading to Robots has to generate a *new* token and paste it
   into the app configuration. The tab detects this and says so.
-- Free-plan accounts get 100,000 Mux AI units a month. Past that, runs fail with
-  `robots_units_limit_exceeded` and the tab renders free-plan copy.
+- Free-plan accounts get 100,000 Mux AI units a month. Past that, Mux refuses a run that would not
+  fit (`robots_units_limit_exceeded`): the run fails, and the tab keeps working under a warning
+  with the free-plan context, which clears on the next run Mux accepts. A workflow a plan does not
+  include — `translate-audio` on the free plan (`robots_workflow_not_available`) — is a failed run
+  too, and says nothing about the rest of the tab. See ADR-0006's 2026-09-23 amendment.
 - The field grows monotonically: job and directive-run records are appended and updated, never
   removed, so history outlives Mux's 30-day purge of the jobs themselves. Contentful put this at
   ~50 KB at 200 jobs and under 250 KB at 1,000, against the CMA request-size limit — a single
@@ -282,9 +287,11 @@ The **Robots** tab runs Mux AI workflows on the current video and reads the resu
   Robots-specific app action or path validation inside the function.
 - **Only what ran through Contentful is stored.** A job is recognised as this plugin's if it is
   already recorded on the entry (the durable test — see the v4 note above), or carries a
-  `passthrough` naming this space, environment and entry, or was dispatched by a directive run on
-  this asset. A job someone ran from the Mux dashboard against the same video is *listed* in the
-  tab — the list reads the API, so it shows everything — but never written to the entry. And once
+  `passthrough` naming this space, environment and entry, or was dispatched by a run of a
+  directive configured at install, recorded on the entry, or started from the tab. A job someone
+  ran from the Mux dashboard against the same video, or one a directive run started elsewhere
+  dispatched, is *listed* in the tab — the list reads the API, so it shows everything, and marks
+  it *Started elsewhere* — but never written to the entry. And once
   a record is stored it stays:
   Robots purges jobs after 30 days, and a finished run is a fact about this entry's history, so it
   is not removed when the API stops returning it. It simply stops updating.

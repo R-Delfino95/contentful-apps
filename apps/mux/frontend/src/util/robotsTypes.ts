@@ -52,6 +52,18 @@ export interface RobotsJob {
   outputs?: Record<string, unknown>;
   errors?: unknown;
   resources?: unknown;
+  /** Single-job GET only, like `passthrough`. Absent for a job created by a direct POST. */
+  directive?: RobotsJobDirective;
+}
+
+/**
+ * The directive run that dispatched a job, as `GET /robots/v0/jobs/{workflow}/{id}` names it: the
+ * two ids `GET /robots/v0/directives/{id}/runs/{run_id}` takes. Documented in the API reference
+ * and in `@mux/mux-node`'s `JobDirectiveContext`.
+ */
+export interface RobotsJobDirective {
+  id: string;
+  run_id: string;
 }
 
 export interface RobotsDirectiveWorkflowBinding {
@@ -133,25 +145,26 @@ export interface RobotsDirectiveRun {
 }
 
 /**
- * Whether this installation can use Robots at all.
- *
- * The four states below are the ones the API can tell us apart, and each gets its own copy in the
- * tab. They are only distinguishable because `muxProxy` forwards Mux's `error.type` — with just a
- * status code, `units-exhausted` and `scope-missing` are both "a 403".
+ * Whether this installation can use Robots at all. Anything but `enabled` replaces the tab with
+ * an explainer, because nothing in it could work — so only the job list read decides it, never a
+ * refused run. See ADR-0006's 2026-09-23 amendment.
  */
-export type RobotsCapabilityState =
-  | 'enabled'
-  | 'not-enabled'
-  | 'scope-missing'
-  | 'units-exhausted';
+export type RobotsCapabilityState = 'enabled' | RobotsUnavailableState;
 
-/** What the tab renders. `loading` and `error` are UI states, not capability states. */
+/** The token cannot reach Robots, or Robots is not turned on for the account. */
+export type RobotsUnavailableState = 'not-enabled' | 'scope-missing';
 
 export interface RobotsCapability {
   state: RobotsCapabilityState;
-  /** Mux's own message, shown alongside our copy when there is one. */
-  message?: string;
+  /** Where the terms that turn Robots on are accepted, when Mux's answer named the page. */
+  termsUrl?: string;
 }
+
+/**
+ * Robots works, but something limits it right now. A warning over a working tab, never instead
+ * of it, and never cached for the session: it is about the runs Mux refused, not about the tab.
+ */
+export type RobotsAdvisory = 'units-exhausted';
 
 // --- Persisted shapes (ours, camelCase) ---
 

@@ -1,7 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import '@testing-library/jest-dom';
-import RobotsJobTable, { RobotsJobDetailState, unitsCell } from './RobotsJobTable';
+import RobotsJobTable, {
+  RobotsJobDetailState,
+  STARTED_ELSEWHERE_TOOLTIP,
+  unitsCell,
+} from './RobotsJobTable';
 import { RobotsJob } from '../../util/robotsTypes';
 
 /**
@@ -38,7 +42,7 @@ const show = (jobs: RobotsJob[], overrides: Record<string, unknown> = {}) => {
   render(
     <RobotsJobTable
       jobs={jobs}
-      storedJobIds={(overrides.storedJobIds as Set<string>) ?? new Set(jobs.map((j) => j.id))}
+      startedElsewhereIds={(overrides.startedElsewhereIds as Set<string>) ?? new Set()}
       detailedJobIds={(overrides.detailedJobIds as Set<string>) ?? new Set()}
       unreadableJobIds={(overrides.unreadableJobIds as Set<string>) ?? new Set()}
       onCancel={props.onCancel as (j: RobotsJob) => void}
@@ -189,5 +193,51 @@ describe('the Units column as an affordance', () => {
     expect(link).toHaveTextContent('Loading…');
     fireEvent.click(link);
     expect(onLoadDetail).not.toHaveBeenCalled();
+  });
+});
+
+describe('an errored row', () => {
+  const errored = () =>
+    job({
+      id: 'rjob_err',
+      status: 'errored',
+      errors: [{ type: 'invalid_input', message: 'The audio track was too quiet' }],
+    });
+
+  it('says it errored, and leaves why to View output', () => {
+    // The reason used to be printed under the workflow name as well as in the modal. The status
+    // badge is what the table says; the modal is where the editor goes for why.
+    show([errored()]);
+
+    const table = screen.getByTestId('robots_job_table');
+    expect(within(table).getByText('errored')).toBeInTheDocument();
+    expect(within(table).queryByText('The audio track was too quiet')).not.toBeInTheDocument();
+    expect(within(table).getByRole('button', { name: 'View output' })).toBeInTheDocument();
+  });
+});
+
+describe('a row started elsewhere', () => {
+  it('says so, and says why on hover', async () => {
+    show([job({ id: 'rjob_ours' }), job({ id: 'rjob_dashboard' })], {
+      startedElsewhereIds: new Set(['rjob_dashboard']),
+    });
+
+    // Only the row the entry does not claim, and never the old wording, which read as a failed
+    // save.
+    const badge = screen.getByText('Started elsewhere');
+    expect(screen.getAllByText('Started elsewhere')).toHaveLength(1);
+    expect(screen.queryByText('Not saved to this entry')).not.toBeInTheDocument();
+
+    fireEvent.mouseOver(badge);
+    await waitFor(() =>
+      expect(screen.getByRole('tooltip')).toHaveTextContent(STARTED_ELSEWHERE_TOOLTIP)
+    );
+  });
+
+  it('gives the directive case its own words, because a directive job is not stored either', () => {
+    // "Run outside the plugin" would be false for a job a directive dispatched on a run this
+    // entry did not start. The explanation has to be true of every row that carries the badge.
+    expect(STARTED_ELSEWHERE_TOOLTIP).toMatch(/a directive this entry did not start/);
+    expect(STARTED_ELSEWHERE_TOOLTIP).toMatch(/not saved to this entry/);
   });
 });
