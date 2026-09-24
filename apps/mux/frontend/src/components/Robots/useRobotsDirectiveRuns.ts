@@ -24,6 +24,11 @@ export interface RobotsDirectiveRunsState {
   loadDirectiveRuns: () => Promise<void>;
   /** For the optimistic row a create adds, which is what arms the poll from the moment of a click. */
   addDirectiveRun: (run: RobotsDirectiveRun) => void;
+  /**
+   * The current set of directives and named runs has not been read once yet, so an empty
+   * `directiveRuns` is not yet an answer. Later re-reads of the same set do not bring it back.
+   */
+  isPending: boolean;
 }
 
 const byNewestStart = (a: RobotsDirectiveRun, b: RobotsDirectiveRun) =>
@@ -51,6 +56,8 @@ export function useRobotsDirectiveRuns({
   const [listedRuns, setListedRuns] = useState<RobotsDirectiveRun[]>([]);
   /** Runs read by id because a job named them. Never feeds the directive set below. */
   const [namedRuns, setNamedRuns] = useState<RobotsDirectiveRun[]>([]);
+  /** The set the last finished pass read, whether or not every call in it succeeded. */
+  const [settledKey, setSettledKey] = useState<string | undefined>();
   /** One pass at a time: overlapping passes resolve out of order and the loser wins. */
   const isLoadingRef = useRef(false);
   /** What the running pass covers, so a request for something else waits instead of vanishing. */
@@ -200,6 +207,7 @@ export function useRobotsDirectiveRuns({
     } finally {
       isLoadingRef.current = false;
       inFlightKeyRef.current = undefined;
+      if (isMountedRef.current) setSettledKey(passKey);
       if (isQueuedRef.current && isMountedRef.current) {
         isQueuedRef.current = false;
         void loadRef.current?.();
@@ -229,5 +237,9 @@ export function useRobotsDirectiveRuns({
     return directiveRuns.filter((run) => !!run.directive_id && claiming.has(run.directive_id));
   }, [directiveRuns, directiveIdKey]);
 
-  return { directiveRuns, claimingRuns, loadDirectiveRuns, addDirectiveRun };
+  // Nothing to read is an answer already: no directive this entry has any tie to.
+  const hasSomethingToRead = !!muxApi && (directiveIdKey !== '' || namedRunKey !== '');
+  const isPending = hasSomethingToRead && settledKey !== `${directiveIdKey}|${namedRunKey}`;
+
+  return { directiveRuns, claimingRuns, loadDirectiveRuns, addDirectiveRun, isPending };
 }

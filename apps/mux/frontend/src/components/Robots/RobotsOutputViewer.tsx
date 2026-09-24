@@ -1,10 +1,24 @@
-import { FC, ReactElement, useEffect, useState } from 'react';
-import { Box, Flex, Modal, Note, Spinner, Tabs, Text } from '@contentful/f36-components';
+import { FC, ReactElement, ReactNode, useEffect, useState } from 'react';
+import {
+  Box,
+  CopyButton,
+  Flex,
+  Grid,
+  Modal,
+  Note,
+  Spinner,
+  Tabs,
+  Text,
+} from '@contentful/f36-components';
 import { RobotsJob, robotsJobErrorMessage } from '../../util/robotsTypes';
+import FieldModal from '../FieldModal';
 import { workflowLabel } from '../../util/robotsCatalog';
+import { formatTimestamp } from '../../util/robotsFormat';
 import { MuxApiService } from '../../util/muxApi';
 import RobotsJsonBlock, { prettyJson } from './RobotsJsonBlock';
 import { OUTPUT_VIEWS } from './RobotsOutputViews';
+import { RobotsJobDetailState, unitsCell } from './RobotsJobTable';
+import RobotsStatusBadge from './RobotsStatusBadge';
 
 export { prettyJson };
 
@@ -101,6 +115,60 @@ const RawJobView: FC<{ job: RobotsJob }> = ({ job }) => (
   </>
 );
 
+/** A label and its value, centred on each other — the id's row is as tall as its copy button. */
+const Fact: FC<{ label: string; children: ReactNode }> = ({ label, children }) => (
+  <>
+    <Flex as="dt" alignItems="center">
+      <Text fontColor="gray600">{label}</Text>
+    </Flex>
+    <Flex as="dd" alignItems="center" gap="spacingXs" margin="none">
+      {children}
+    </Flex>
+  </>
+);
+
+/**
+ * The job's facts as a key/value list. The workflow is the modal's title, so it is not repeated.
+ *
+ * The id is truncated with a copy button beside it: it is only wanted verbatim, and at full length
+ * it pushed the modal into a horizontal scroll. `minmax(0, 1fr)` is what lets it truncate rather
+ * than widen its column.
+ */
+const JobFacts: FC<{ job: RobotsJob; units: string }> = ({ job, units }) => (
+  <Grid
+    as="dl"
+    columns="max-content minmax(0, 1fr)"
+    columnGap="spacingM"
+    rowGap="spacing2Xs"
+    margin="none"
+    marginBottom="spacingM"
+    data-testid="robots-job-facts">
+    <Fact label="Status">
+      <RobotsStatusBadge kind="job" status={job.status} />
+    </Fact>
+    <Fact label="AI units">
+      <Text>{units}</Text>
+    </Fact>
+    <Fact label="Started">
+      <Text>{formatTimestamp(job.created_at)}</Text>
+    </Fact>
+    <Fact label="Job ID">
+      {/* Direct children of the value cell, not wrapped: a truncating flex item has to be the
+          cell's own child, or the wrapper's minimum width is the id's full length again. */}
+      <Text isTruncated title={job.id} data-testid="robots-job-id">
+        {job.id}
+      </Text>
+      <CopyButton
+        value={job.id}
+        size="small"
+        label="Copy job ID"
+        tooltipText="Copy job ID"
+        tooltipCopiedText="Copied"
+      />
+    </Fact>
+  </Grid>
+);
+
 /**
  * What one fetch came back with, and **which job it was about**.
  *
@@ -179,21 +247,21 @@ const RobotsOutputViewer: FC<RobotsOutputViewerProps> = ({ job, muxApi, onLoaded
   const error = settled?.message;
   /** Derived, never latched, so a cancelled request leaves nothing to get stuck on. */
   const isLoading = !!jobId && !isHeldInFull && !settled;
+  /** The job table's vocabulary for the same cell, so the two never disagree about a job. */
+  const detail: RobotsJobDetailState =
+    isHeldInFull || settled?.job ? 'loaded' : error ? 'unreadable' : 'unread';
 
   return (
-    <Modal isShown={!!job} onClose={onClose} size="large">
+    <FieldModal isShown={!!job} onClose={onClose} size="large">
       {() =>
         shown ? (
           <>
             <Modal.Header title={workflowLabel(shown.workflow)} onClose={onClose} />
             <Modal.Content>
-              <Box marginBottom="spacingM">
-                <Text fontColor="gray600">
-                  Job {shown.id}
-                  {typeof shown.units_consumed === 'number' &&
-                    ` · ${shown.units_consumed} AI units`}
-                </Text>
-              </Box>
+              <JobFacts
+                job={shown}
+                units={isLoading ? 'Loading…' : unitsCell(shown, detail).label}
+              />
               {/*
                 Loading and error stay whole-modal states rather than becoming extra tabs: neither
                 has a payload yet, so a Raw JSON tab beside them could only show the summary row
@@ -229,7 +297,7 @@ const RobotsOutputViewer: FC<RobotsOutputViewerProps> = ({ job, muxApi, onLoaded
           </>
         ) : null
       }
-    </Modal>
+    </FieldModal>
   );
 };
 

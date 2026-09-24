@@ -87,6 +87,8 @@ export interface RobotsParamOption {
 export interface RobotsAssetContext {
   hasCaptions?: boolean;
   isAudioOnly?: boolean;
+  /** Seconds. Absent for a live stream, whose recorded duration is still growing. */
+  duration?: number;
 }
 
 /**
@@ -140,12 +142,26 @@ export interface RobotsConfirmWarning {
   body: string;
 }
 
+/**
+ * A titled group of neighbouring fields in the run form.
+ *
+ * Presentation only — nothing validated or sent depends on it. Declared on each field and grouped
+ * by the renderer over consecutive fields, so a workflow's parameter order stays the one source of
+ * layout; `robotsCatalog.test.ts` holds every section's fields together.
+ */
+export interface RobotsParamSection {
+  id: string;
+  title: string;
+  description?: string;
+}
+
 export interface RobotsParamField {
   kind: RobotsParamKind;
   /** Dotted path within the job's `parameters` object. */
   name: string;
   label: string;
   helpText?: string;
+  section?: RobotsParamSection;
   isRequired?: boolean;
   placeholder?: string;
   /** `select` and `enumList` only. */
@@ -197,9 +213,28 @@ export interface RobotsWorkflowDefinition {
   producesTrack?: boolean;
   /** Not available on every plan; the app has no entitlement view, so this is informational. */
   planRestricted?: boolean;
+  /**
+   * Cannot run on an audio-only asset, so the picker offers it disabled there — see
+   * `workflowUnavailableReason`. Only a known audio-only asset disables it; an unknown kind
+   * offers everything.
+   *
+   * `find-scenes` is documented: "Audio-only assets are not supported." `find-best-thumbnails`
+   * is **a product decision, not a documented restriction**: the reference says nothing about
+   * audio-only assets, but the workflow ranks frames and such an asset has none. It is not
+   * missing a citation; do not remove it for want of one.
+   */
+  requiresVideoTrack?: boolean;
 }
 
 const LANGUAGE_HELP = 'BCP 47 language code, e.g. en, es, ja.';
+
+/**
+ * The label for every workflow's `language_code` that selects which of the asset's caption tracks
+ * the workflow reads. It used to be "Caption track language" or "Transcript language", which
+ * editors read as the language of the result. Each field's help text says, per the reference,
+ * what Mux picks when it is left empty — the rule differs by workflow.
+ */
+const CAPTIONS_TO_READ_LABEL = 'Captions to read';
 
 /**
  * The label for a select's `''` option.
@@ -220,6 +255,46 @@ const LANGUAGE_HELP = 'BCP 47 language code, e.g. en, es, ja.';
  * `robotsCatalog.test.ts` asserts no select can go back to saying "Default".
  */
 const NO_PREFERENCE_LABEL = 'No preference';
+
+/**
+ * `output_steering.scope`, which six workflows take in the same shape: "Optional execution window
+ * in seconds on the original asset timeline." `validateParams` holds the pair to start < end.
+ */
+const SCOPE_SECTION: RobotsParamSection = {
+  id: 'scope',
+  title: 'Part of the video',
+  description:
+    'Seconds from the start of the video. Leave both empty to use all of it; timestamps in the ' +
+    'result are still measured from the start.',
+};
+
+const SCOPE_FIELDS: RobotsParamField[] = [
+  {
+    kind: 'number',
+    name: 'output_steering.scope.start_time',
+    label: 'Start time (seconds)',
+    min: 0,
+    step: 1,
+    section: SCOPE_SECTION,
+  },
+  {
+    kind: 'number',
+    name: 'output_steering.scope.end_time',
+    label: 'End time (seconds)',
+    min: 0,
+    step: 1,
+    section: SCOPE_SECTION,
+  },
+];
+
+const TAGS_SECTION: RobotsParamSection = { id: 'tags', title: 'Tags' };
+
+/** `find-key-moments`' `target_duration_ms`: the API takes both bounds together or neither. */
+const HIGHLIGHT_LENGTH_SECTION: RobotsParamSection = {
+  id: 'highlight-length',
+  title: 'Highlight length',
+  description: 'Set both bounds, or neither.',
+};
 
 const UPLOAD_TO_MUX: RobotsParamField = {
   kind: 'boolean',
@@ -263,10 +338,15 @@ export const ROBOTS_CATALOG: RobotsWorkflowDefinition[] = [
         helpText: `Leave empty to auto-detect. ${LANGUAGE_HELP}`,
       },
       {
+        // No placeholder: the reference writes the default as `"{Language} (Generated)"`, and
+        // shown in the box that read as a template the form would fill in. The help text says
+        // what Mux actually does instead.
         kind: 'text',
         name: 'track_name',
         label: 'Track name',
-        placeholder: '{Language} (Generated)',
+        helpText:
+          'Leave empty and Mux names the track after its language — "English (Generated)" for ' +
+          'English audio.',
       },
       { kind: 'boolean', name: 'include_speakers', label: 'Label speakers', defaultValue: false },
       {
@@ -378,7 +458,7 @@ export const ROBOTS_CATALOG: RobotsWorkflowDefinition[] = [
         kind: 'text',
         name: 'track_name_suffix',
         label: 'Suffix for the new track name',
-        placeholder: 'edited',
+        helpText: 'Added to the original track’s name. Leave empty for Mux’s default, "edited".',
       },
       UPLOAD_TO_MUX,
       {
@@ -477,8 +557,6 @@ export const ROBOTS_CATALOG: RobotsWorkflowDefinition[] = [
         ],
         defaultValue: '',
       },
-      // No documented maximum — the `max: 50` that used to be here was ours, not Mux's.
-      { kind: 'number', name: 'tag_count', label: 'Number of tags', min: 1, step: 1 },
       {
         kind: 'number',
         name: 'title_length',
@@ -494,16 +572,20 @@ export const ROBOTS_CATALOG: RobotsWorkflowDefinition[] = [
         step: 1,
       },
       {
+        // "BCP 47 language code of the caption track to analyze … When omitted, the SDK uses the
+        // default track."
         kind: 'language',
         name: 'language_code',
-        label: 'Caption track language',
-        helpText: LANGUAGE_HELP,
+        label: CAPTIONS_TO_READ_LABEL,
+        helpText:
+          'Summarize reads one of this video’s caption tracks. Choose the language of the one ' +
+          'to use, or leave empty and Mux picks. The summary’s own language is Output language.',
       },
       {
         kind: 'language',
         name: 'output_language_code',
         label: 'Output language',
-        helpText: LANGUAGE_HELP,
+        helpText: `Leave empty to write in the captions’ language. ${LANGUAGE_HELP}`,
       },
       {
         kind: 'text',
@@ -518,6 +600,16 @@ export const ROBOTS_CATALOG: RobotsWorkflowDefinition[] = [
         helpText: 'Terminology to prefer in the generated copy.',
       },
       {
+        // No documented maximum — the `max: 50` that used to be here was ours, not Mux's.
+        kind: 'number',
+        name: 'tag_count',
+        label: 'Number of tags',
+        helpText: 'Defaults to 10.',
+        min: 1,
+        step: 1,
+        section: TAGS_SECTION,
+      },
+      {
         // The one taxonomy whose caps the reference actually states, all six of them. Unlike
         // `topic_taxonomy`, `allow_other: false` here is documented as a hard filter — "generated
         // tags are filtered to taxonomy labels and aliases" — rather than a preference.
@@ -527,6 +619,7 @@ export const ROBOTS_CATALOG: RobotsWorkflowDefinition[] = [
         helpText:
           'A controlled vocabulary for the generated tags. Up to 50 values, and 2000 characters ' +
           'across the whole taxonomy. Leave it empty to let the model choose its own tags.',
+        section: TAGS_SECTION,
         taxonomyLimits: {
           maxValues: 50,
           maxNameLength: 100,
@@ -549,21 +642,7 @@ export const ROBOTS_CATALOG: RobotsWorkflowDefinition[] = [
         ],
         defaultValue: '',
       },
-      {
-        kind: 'number',
-        name: 'output_steering.scope.start_time',
-        label: 'Start time (seconds)',
-        helpText: 'Limits the analysis to part of the video. Returned timestamps stay absolute.',
-        min: 0,
-        step: 1,
-      },
-      {
-        kind: 'number',
-        name: 'output_steering.scope.end_time',
-        label: 'End time (seconds)',
-        min: 0,
-        step: 1,
-      },
+      ...SCOPE_FIELDS,
       {
         // The counterpart to `update_asset_thumbnail` on find-best-thumbnails, and the most
         // CMS-relevant of the parameters that were missing: it writes the generated title
@@ -605,26 +684,16 @@ export const ROBOTS_CATALOG: RobotsWorkflowDefinition[] = [
         step: 1,
       },
       {
+        // Same wording on the reference as `summarize`'s: "When omitted, the SDK uses the default
+        // track."
         kind: 'language',
         name: 'language_code',
-        label: 'Caption track language',
-        helpText: LANGUAGE_HELP,
+        label: CAPTIONS_TO_READ_LABEL,
+        helpText:
+          'The answers come from one of this video’s caption tracks. Choose the language of ' +
+          'the one to use, or leave empty and Mux picks.',
       },
-      {
-        kind: 'number',
-        name: 'output_steering.scope.start_time',
-        label: 'Start time (seconds)',
-        helpText: 'Limits the analysis to part of the video. Returned timestamps stay absolute.',
-        min: 0,
-        step: 1,
-      },
-      {
-        kind: 'number',
-        name: 'output_steering.scope.end_time',
-        label: 'End time (seconds)',
-        min: 0,
-        step: 1,
-      },
+      ...SCOPE_FIELDS,
     ],
   },
   {
@@ -665,17 +734,17 @@ export const ROBOTS_CATALOG: RobotsWorkflowDefinition[] = [
         kind: 'number',
         name: 'target_duration_ms.min',
         label: 'Minimum highlight length (ms)',
-        helpText: 'Set both length bounds, or neither.',
         min: 0,
         step: 1000,
+        section: HIGHLIGHT_LENGTH_SECTION,
       },
       {
         kind: 'number',
         name: 'target_duration_ms.max',
         label: 'Maximum highlight length (ms)',
-        helpText: 'Set both length bounds, or neither.',
         min: 0,
         step: 1000,
+        section: HIGHLIGHT_LENGTH_SECTION,
       },
       {
         kind: 'select',
@@ -724,33 +793,21 @@ export const ROBOTS_CATALOG: RobotsWorkflowDefinition[] = [
         helpText: 'Terminology to prefer in the generated titles. One per line; spaces are fine.',
       },
       TOPIC_TAXONOMY,
-      {
-        kind: 'number',
-        name: 'output_steering.scope.start_time',
-        label: 'Start time (seconds)',
-        helpText: 'Limits the analysis to part of the video. Returned timestamps stay absolute.',
-        min: 0,
-        step: 1,
-      },
-      {
-        kind: 'number',
-        name: 'output_steering.scope.end_time',
-        label: 'End time (seconds)',
-        min: 0,
-        step: 1,
-      },
+      ...SCOPE_FIELDS,
     ],
     // The two banners that used to live here are gone. Both restated a field's own constraint one
     // scroll away from the field, and `notes` renders again in the confirm step, where a rule the
-    // editor can no longer act on is just noise. The length-bounds rule is now help text on both
-    // bound fields; the captions rule is help text on `use_shots`, and `validateParams` blocks the
-    // run either way.
+    // editor can no longer act on is just noise. The length-bounds rule is the description of the
+    // section both bounds sit in; the captions rule is help text on `use_shots`, and
+    // `validateParams` blocks the run either way.
   },
   {
     key: 'find-best-thumbnails',
     label: 'Find best thumbnails',
     category: 'Insights',
     description: 'Sample and rank frames to pick the strongest thumbnail.',
+    // Our decision, not the reference's — see `requiresVideoTrack`.
+    requiresVideoTrack: true,
     params: [
       {
         kind: 'number',
@@ -805,21 +862,7 @@ export const ROBOTS_CATALOG: RobotsWorkflowDefinition[] = [
       },
       { kind: 'text', name: 'output_steering.audience', label: 'Audience' },
       { kind: 'text', name: 'output_steering.campaign_style', label: 'Campaign style' },
-      {
-        kind: 'number',
-        name: 'output_steering.scope.start_time',
-        label: 'Start time (seconds)',
-        helpText: 'Limits sampling to part of the video.',
-        min: 0,
-        step: 1,
-      },
-      {
-        kind: 'number',
-        name: 'output_steering.scope.end_time',
-        label: 'End time (seconds)',
-        min: 0,
-        step: 1,
-      },
+      ...SCOPE_FIELDS,
     ],
   },
   {
@@ -841,16 +884,20 @@ export const ROBOTS_CATALOG: RobotsWorkflowDefinition[] = [
     notes: ['Chapters are returned with the job. Mux does not write them onto the asset.'],
     params: [
       {
+        // "When omitted, the SDK prefers English if available."
         kind: 'language',
         name: 'language_code',
-        label: 'Caption track language',
-        helpText: LANGUAGE_HELP,
+        label: CAPTIONS_TO_READ_LABEL,
+        helpText:
+          'Chapters are made from one of this video’s caption tracks. Choose the language of ' +
+          'the one to use, or leave empty and Mux prefers English when there is an English ' +
+          'track. The chapter titles’ language is Output language.',
       },
       {
         kind: 'language',
         name: 'output_language_code',
         label: 'Output language',
-        helpText: LANGUAGE_HELP,
+        helpText: `Leave empty to write in the captions’ language. ${LANGUAGE_HELP}`,
       },
       {
         kind: 'select',
@@ -891,12 +938,17 @@ export const ROBOTS_CATALOG: RobotsWorkflowDefinition[] = [
     label: 'Find scenes',
     category: 'Structure',
     description: 'Segment the video into ordered, timestamped scenes.',
+    requiresVideoTrack: true,
     params: [
       {
+        // "Preferred transcript language code to analyze when a matching transcript track is
+        // available. Defaults to the first ready transcript track on the asset."
         kind: 'language',
         name: 'language_code',
-        label: 'Transcript language',
-        helpText: LANGUAGE_HELP,
+        label: CAPTIONS_TO_READ_LABEL,
+        helpText:
+          'Scenes are found from this video’s caption track in that language, if it has one. ' +
+          'Leave empty to use the first caption track that is ready.',
       },
       { kind: 'number', name: 'min_scenes', label: 'Minimum scenes (hint)', min: 1, step: 1 },
       {
@@ -943,21 +995,7 @@ export const ROBOTS_CATALOG: RobotsWorkflowDefinition[] = [
         helpText: 'One per line.',
       },
       TOPIC_TAXONOMY,
-      {
-        kind: 'number',
-        name: 'output_steering.scope.start_time',
-        label: 'Start time (seconds)',
-        helpText: 'Limits the analysis to part of the video. Timestamps stay absolute.',
-        min: 0,
-        step: 1,
-      },
-      {
-        kind: 'number',
-        name: 'output_steering.scope.end_time',
-        label: 'End time (seconds)',
-        min: 0,
-        step: 1,
-      },
+      ...SCOPE_FIELDS,
       {
         kind: 'number',
         name: 'min_scene_duration_ms',
@@ -982,10 +1020,10 @@ export const ROBOTS_CATALOG: RobotsWorkflowDefinition[] = [
         // is the worse failure of the two.
         kind: 'language',
         name: 'language_code',
-        label: 'Transcript language',
+        label: CAPTIONS_TO_READ_LABEL,
         helpText:
-          'Used to pick the transcript on an audio-only video. Leave empty to use the first ready ' +
-          `text track; Mux defaults to en. ${LANGUAGE_HELP}`,
+          'Only for an audio-only video, which is moderated from its captions. Choose the ' +
+          'language of the caption track to use, or leave empty for the first one that is ready.',
         showWhen: { context: 'isAudioOnly', notEquals: false },
       },
       {
@@ -1017,20 +1055,7 @@ export const ROBOTS_CATALOG: RobotsWorkflowDefinition[] = [
         step: 1,
       },
       { kind: 'number', name: 'max_samples', label: 'Maximum samples', min: 1, step: 1 },
-      {
-        kind: 'number',
-        name: 'output_steering.scope.start_time',
-        label: 'Start time (seconds)',
-        min: 0,
-        step: 1,
-      },
-      {
-        kind: 'number',
-        name: 'output_steering.scope.end_time',
-        label: 'End time (seconds)',
-        min: 0,
-        step: 1,
-      },
+      ...SCOPE_FIELDS,
       {
         // The whole of `on_flagged`, which is an optional object with exactly one documented
         // field: "Action to take when exceeds_threshold is true." One select carries it, so the
@@ -1086,6 +1111,33 @@ export const ROBOTS_CATEGORIES: RobotsCategory[] = [
 
 export function workflowLabel(workflow: string): string {
   return ROBOTS_CATALOG_BY_KEY[workflow as RobotsWorkflow]?.label ?? workflow;
+}
+
+/** What the run form opens on. */
+export const DEFAULT_ROBOTS_WORKFLOW: RobotsWorkflow = 'summarize';
+
+/** Why this asset cannot run a workflow, as the picker's suffix — or `undefined` when it can. */
+export function workflowUnavailableReason(
+  definition: RobotsWorkflowDefinition,
+  context: RobotsAssetContext = {}
+): string | undefined {
+  return definition.requiresVideoTrack && context.isAudioOnly === true
+    ? 'not available for audio-only'
+    : undefined;
+}
+
+/**
+ * The workflow the form should hold: `preferred` if this asset can run it, the default otherwise.
+ * What keeps an unavailable workflow off the screen — preselected, or picked before the asset
+ * turned out to be audio-only. The default runs on any asset; a catalog test holds it to that.
+ */
+export function availableWorkflow(
+  preferred: RobotsWorkflow,
+  context: RobotsAssetContext = {}
+): RobotsWorkflow {
+  return workflowUnavailableReason(ROBOTS_CATALOG_BY_KEY[preferred], context)
+    ? DEFAULT_ROBOTS_WORKFLOW
+    : preferred;
 }
 
 /**
@@ -1254,6 +1306,22 @@ export function isFieldVisible(
   if (!condition) return true;
   if ('context' in condition) return context[condition.context] !== condition.notEquals;
   return values[condition.field] === condition.equals;
+}
+
+export interface RobotsFieldGroup {
+  section?: RobotsParamSection;
+  fields: RobotsParamField[];
+}
+
+/** Consecutive fields that share a section become one group; every other field stands alone. */
+export function groupFieldsBySection(fields: RobotsParamField[]): RobotsFieldGroup[] {
+  const groups: RobotsFieldGroup[] = [];
+  for (const field of fields) {
+    const last = groups[groups.length - 1];
+    if (field.section && last?.section?.id === field.section.id) last.fields.push(field);
+    else groups.push({ section: field.section, fields: [field] });
+  }
+  return groups;
 }
 
 /** Splits an `ask-questions` row's comma-separated options box into trimmed, non-empty options. */
@@ -1469,6 +1537,47 @@ function taxonomyErrors(
   return errors;
 }
 
+/** One bound of `output_steering.scope`, when this workflow takes it and the editor set it. */
+function scopeBound(
+  definition: RobotsWorkflowDefinition,
+  values: Record<string, unknown>,
+  name: string
+): number | undefined {
+  const field = definition.params.find((candidate) => candidate.name === name);
+  const value = field ? toApiParamValue(field, values[name]) : undefined;
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+/**
+ * The execution window, for every workflow that takes one — keyed on the parameters rather than
+ * on workflow names, so a workflow that gains a scope gains the rule.
+ *
+ * A start at or past the end is an empty window: nothing to analyse, and left to Mux it is a
+ * refusal after the editor has confirmed. The asset's duration only refuses a *start* past the end
+ * of the video. An end past it still leaves a window over real content, and the reference does
+ * not say Mux rejects one, so refusing it would be a restriction we invented.
+ */
+function scopeErrors(
+  definition: RobotsWorkflowDefinition,
+  values: Record<string, unknown>,
+  context: RobotsAssetContext
+): string[] {
+  const start = scopeBound(definition, values, 'output_steering.scope.start_time');
+  const end = scopeBound(definition, values, 'output_steering.scope.end_time');
+  const errors: string[] = [];
+  if (start !== undefined && end !== undefined && start >= end) {
+    errors.push('The start time must be before the end time.');
+  }
+  if (start !== undefined && context.duration !== undefined && start >= context.duration) {
+    errors.push(
+      `The start time is past the end of the video, which is ${Number(
+        context.duration.toFixed(1)
+      )} seconds long.`
+    );
+  }
+  return errors;
+}
+
 /**
  * Client-side validation, so an editor sees the problem before a job is billed rather than as a
  * 400 afterwards.
@@ -1528,12 +1637,6 @@ export function validateParams(
     }
   }
 
-  // `find-scenes` is documented as not supported on audio-only assets at all. There is no
-  // parameter that makes it work, so this is the whole workflow rather than one field.
-  if (definition.key === 'find-scenes' && context.isAudioOnly === true) {
-    errors.push('Find scenes does not support audio-only videos.');
-  }
-
   // `find-key-moments` has a prerequisite that is not a parameter: without `use_shots` the
   // selection reads the transcript, so the asset needs a caption track. Failing that, the POST is
   // accepted and the *job* errors minutes later — the worst shape of failure, because the editor
@@ -1561,8 +1664,8 @@ export function validateParams(
   }
 
   // `generate-chapters` reads the transcript and has no visual fallback — its own
-  // `language_code` is labelled "Caption track language", which is the catalog saying the
-  // workflow picks a *caption track*. With none on the asset there is nothing to chapter, the
+  // `language_code` is "the caption track to analyze" in the reference, i.e. the workflow picks a
+  // *caption track*. With none on the asset there is nothing to chapter, the
   // POST is accepted, and the job errors minutes later, by which time the editor has been told
   // the run started and has been charged for finding out. Same prerequisite, same mechanism and
   // same shape of message as `find-key-moments` above; the difference is that chapters has no
@@ -1572,6 +1675,8 @@ export function validateParams(
       'This video has no caption track. Chapters are generated from the transcript, so generate captions first.'
     );
   }
+
+  errors.push(...scopeErrors(definition, values, context));
 
   // `find-key-moments` requires both bounds together or neither.
   if (definition.key === 'find-key-moments') {

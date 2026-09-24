@@ -211,3 +211,59 @@ seconds between a track being attached and the asset poll seeing it, and Refresh
 **Neutral.** `validateParams` is still a list of `if (definition.key === …)` blocks rather than
 anything data-driven. Three preconditions across twelve workflows does not pay for a mechanism,
 and every one of them has been a different shape so far.
+
+## Amendment, 2026-09-24: a workflow the asset cannot run is offered disabled, not refused
+
+The Decision above made a request Mux documents as invalid unconstructable, through `showWhen`,
+and the 2026-09-21 amendment kept `validateParams` for a well-formed request this asset cannot
+satisfy. There was a third case sitting in the second mechanism: a whole workflow the asset cannot
+run. `find-scenes` on an audio-only video could be picked, filled in, and only then refused by
+`validateParams` — the form describing a run it will not let anyone make, which is the problem this
+ADR opened with.
+
+**So the picker offers it disabled.** The catalog's `requiresVideoTrack` marks the workflows that
+cannot run on an audio-only asset, and `workflowUnavailableReason` is the one place that reads it.
+The dropdown still lists every workflow — so an editor can see it exists — and shows those two as
+"… (not available for audio-only)". The `validateParams` branch for `find-scenes` is deleted: a
+workflow the form can no longer hold cannot need refusing.
+
+**Which two, and why the second one.** `find-scenes` is documented: "Audio-only assets are not
+supported." `find-best-thumbnails` is **a product decision, not a documented restriction** — the
+reference says nothing about audio-only assets, but the workflow ranks frames, and an audio-only
+asset has none. Recorded here and on the flag so it is not mistaken for a missing citation and
+removed.
+
+**The form never holds an unavailable workflow.** `availableWorkflow` swaps one for the default —
+a preselected `initialWorkflow`, or a choice made before the asset turned out to be audio-only,
+which is how an entry whose value predates `audioOnly` learns it — and the swap sticks. The confirm
+step is tied to the workflow it was reached for, so it cannot survive the swap and confirm the
+default by accident. An unknown asset kind disables nothing, the same tri-state rule as the
+`notEquals: false` condition above.
+
+`find-key-moments`' `use_shots` refusal on an audio-only asset stays in `validateParams`: it is a
+parameter the asset restricts, not a workflow, and the rest of that form is still usable.
+
+**The scope window is refused the old way, because there is nothing to hide.** Six workflows take
+`output_steering.scope`, "an optional execution window in seconds on the original asset timeline".
+A start at or past the end is an empty window, and `validateParams` now refuses it before Continue,
+keyed on the parameters rather than on workflow names so a workflow that gains a scope gains the
+rule — the same mechanism as `find-key-moments`' highlight bounds. When the asset's duration is
+known, a *start* past the end of the video is refused too. An *end* past it is not: the window
+still covers real content, and the reference does not say Mux rejects one, so refusing it would be
+the invented restriction this catalog keeps ruling out. A live stream's duration is still growing,
+so it is not passed.
+
+### Consequences of this amendment
+
+**Positive.** Nothing on offer in the picker is refused later, and the one rule that decides what
+is on offer lives in the catalog beside the reason for it.
+
+**Negative.** An audio-only video whose editor wanted scenes now meets a disabled option rather
+than an explanation after picking it; the suffix is the whole of the explanation. If Mux documents
+a video-less path for thumbnails, the flag is the one line to remove.
+
+**Neutral.** `validateParams` loses one workflow-level block and gains a parameter-keyed one. Its
+`definition.key` checks are otherwise unchanged. The "Caption track language" label the
+2026-09-21 amendment reasons from is now "Captions to read" on all five fields that pick a caption
+track, because editors read the old one as the language of the result. The reference's own
+wording — "the caption track to analyze" — says the same thing as the label did, more firmly.

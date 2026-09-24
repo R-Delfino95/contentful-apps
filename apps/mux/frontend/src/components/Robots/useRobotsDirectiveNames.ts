@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { MuxApiService } from '../../util/muxApi';
 import { RobotsDirective } from '../../util/robotsTypes';
 
@@ -16,6 +16,9 @@ import { RobotsDirective } from '../../util/robotsTypes';
  * when a directive has been deleted in Mux since it was configured.
  */
 
+/** One page, as the listing below reads it. A full page may not be all of them. */
+const PAGE_SIZE = 100;
+
 /** id → display name, falling back to the id for anything the listing does not cover. */
 export function directiveNamesById(
   directives: RobotsDirective[],
@@ -29,6 +32,16 @@ export function directiveNamesById(
   return names;
 }
 
+export interface RobotsDirectiveNames {
+  names: Record<string, string>;
+  /**
+   * Requested ids Mux does not have: a listing that was not cut short returned every directive
+   * in the account, and these were not among them. Empty until then, and after a failed listing,
+   * because neither is evidence of absence.
+   */
+  missingIds: string[];
+}
+
 /**
  * Resolves names for a set of directive ids, once, while `isEnabled`.
  *
@@ -40,8 +53,8 @@ export function useRobotsDirectiveNames(
   muxApi: MuxApiService | undefined,
   directiveIds: string[],
   isEnabled: boolean
-): Record<string, string> {
-  const [directives, setDirectives] = useState<RobotsDirective[]>([]);
+): RobotsDirectiveNames {
+  const [listing, setListing] = useState<{ directives: RobotsDirective[]; isComplete: boolean }>();
   const idKey = [...directiveIds].sort().join(',');
 
   useEffect(() => {
@@ -50,8 +63,9 @@ export function useRobotsDirectiveNames(
 
     (async () => {
       try {
-        const response = await muxApi.listRobotsDirectives({ limit: 100 });
-        if (!cancelled) setDirectives(response.data ?? []);
+        const response = await muxApi.listRobotsDirectives({ limit: PAGE_SIZE });
+        const directives = response.data ?? [];
+        if (!cancelled) setListing({ directives, isComplete: directives.length < PAGE_SIZE });
       } catch (error) {
         // The ids still render, and they are what the request is built from either way. A failed
         // listing must never be able to hold up an upload.
@@ -64,5 +78,13 @@ export function useRobotsDirectiveNames(
     };
   }, [muxApi, idKey, isEnabled]);
 
-  return directiveNamesById(directives, directiveIds);
+  // Keyed on `idKey` rather than `directiveIds`, whose identity can change on every render.
+  return useMemo(() => {
+    const ids = idKey ? idKey.split(',') : [];
+    const listed = new Set((listing?.directives ?? []).map((directive) => directive.id));
+    return {
+      names: directiveNamesById(listing?.directives ?? [], ids),
+      missingIds: listing?.isComplete ? ids.filter((id) => !listed.has(id)) : [],
+    };
+  }, [listing, idKey]);
 }

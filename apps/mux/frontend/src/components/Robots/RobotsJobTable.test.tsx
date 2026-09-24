@@ -241,3 +241,32 @@ describe('a row started elsewhere', () => {
     expect(STARTED_ELSEWHERE_TOOLTIP).toMatch(/not saved to this entry/);
   });
 });
+
+describe('RobotsJobTable — row alignment and loading', () => {
+  it('centres every cell of a row on the row, not on its top edge', () => {
+    // F36 tables align cells to the top; the Actions button is taller than the text beside it.
+    show([job()]);
+    const cells = screen.getByTestId('robots_job_table').querySelectorAll('tbody td');
+    expect(cells.length).toBeGreaterThan(0);
+    for (const cell of Array.from(cells)) expect(cell).toHaveStyle({ verticalAlign: 'middle' });
+  });
+
+  it('draws placeholder rows, not an empty state, while the list itself is loading', () => {
+    render(
+      <RobotsJobTable
+        jobs={[]}
+        isLoading
+        startedElsewhereIds={new Set()}
+        detailedJobIds={new Set()}
+        unreadableJobIds={new Set()}
+        onCancel={vi.fn()}
+        onViewOutput={vi.fn()}
+        onLoadDetail={vi.fn()}
+        cancellingIds={[]}
+        loadingDetailIds={[]}
+      />
+    );
+    expect(screen.getByTestId('robots_job_table_loading')).toBeInTheDocument();
+    expect(screen.queryByText(/No Robots jobs have run/)).not.toBeInTheDocument();
+  });
+});

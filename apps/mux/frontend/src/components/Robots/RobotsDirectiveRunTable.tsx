@@ -1,5 +1,5 @@
 import { FC, Fragment, useState } from 'react';
-import { Box, IconButton, Table, Text } from '@contentful/f36-components';
+import { Box, Flex, IconButton, Skeleton, Table, Text } from '@contentful/f36-components';
 import { ChevronDownIcon, ChevronUpIcon } from '@contentful/f36-icons';
 import { RobotsDirectiveRun, RobotsNodeState } from '../../util/robotsTypes';
 import { workflowLabel } from '../../util/robotsCatalog';
@@ -17,7 +17,11 @@ import RobotsStatusBadge from './RobotsStatusBadge';
 interface RobotsDirectiveRunTableProps {
   runs: RobotsDirectiveRun[];
   directiveNames: Record<string, string>;
+  /** Still reading the runs for the first time, so no runs is not yet an answer. */
+  isLoading?: boolean;
 }
+
+const COLUMNS = ['Directive', 'Status', 'Started', 'Steps'];
 
 const nodeDetail = (node: RobotsNodeState): string => {
   if (node.reason) return node.reason;
@@ -26,7 +30,7 @@ const nodeDetail = (node: RobotsNodeState): string => {
 };
 
 const NodeStateRows: FC<{ nodeStates: RobotsNodeState[] }> = ({ nodeStates }) => (
-  <Table>
+  <Table verticalAlign="middle">
     <Table.Head>
       <Table.Row>
         <Table.Cell>Workflow</Table.Cell>
@@ -52,8 +56,35 @@ const NodeStateRows: FC<{ nodeStates: RobotsNodeState[] }> = ({ nodeStates }) =>
   </Table>
 );
 
-const RobotsDirectiveRunTable: FC<RobotsDirectiveRunTableProps> = ({ runs, directiveNames }) => {
+const RobotsDirectiveRunTable: FC<RobotsDirectiveRunTableProps> = ({
+  runs,
+  directiveNames,
+  isLoading = false,
+}) => {
   const [expandedId, setExpandedId] = useState<string | undefined>();
+
+  const head = (
+    <Table.Head>
+      <Table.Row>
+        {COLUMNS.map((column) => (
+          <Table.Cell key={column}>{column}</Table.Cell>
+        ))}
+      </Table.Row>
+    </Table.Head>
+  );
+
+  if (runs.length === 0 && isLoading) {
+    return (
+      <Box marginBottom="spacingM">
+        <Table data-testid="robots_directive_run_table_loading" verticalAlign="middle">
+          {head}
+          <Table.Body>
+            <Skeleton.Row rowCount={1} columnCount={COLUMNS.length} />
+          </Table.Body>
+        </Table>
+      </Box>
+    );
+  }
 
   if (runs.length === 0) {
     return <EmptyTableNote>No directive runs for this video yet.</EmptyTableNote>;
@@ -61,15 +92,10 @@ const RobotsDirectiveRunTable: FC<RobotsDirectiveRunTableProps> = ({ runs, direc
 
   return (
     <Box marginBottom="spacingM">
-      <Table data-testid="robots_directive_run_table">
-        <Table.Head>
-          <Table.Row>
-            <Table.Cell>Directive</Table.Cell>
-            <Table.Cell>Status</Table.Cell>
-            <Table.Cell>Started</Table.Cell>
-            <Table.Cell>Steps</Table.Cell>
-          </Table.Row>
-        </Table.Head>
+      {/* F36 tables align cells to the top by default, which leaves a text cell riding above the
+          taller expand button beside it. */}
+      <Table data-testid="robots_directive_run_table" verticalAlign="middle">
+        {head}
         <Table.Body>
           {runs.map((run) => {
             const isExpanded = expandedId === run.run_id;
@@ -78,7 +104,8 @@ const RobotsDirectiveRunTable: FC<RobotsDirectiveRunTableProps> = ({ runs, direc
             return (
               <Fragment key={run.run_id}>
                 <Table.Row>
-                  <Table.Cell>
+                  {/* A directive with no name shows its id, which has no spaces to wrap at. */}
+                  <Table.Cell isWordBreak>
                     <Text>
                       {directiveNames[run.directive_id ?? ''] ?? run.directive_id ?? EM_DASH}
                     </Text>
@@ -88,14 +115,16 @@ const RobotsDirectiveRunTable: FC<RobotsDirectiveRunTableProps> = ({ runs, direc
                   </Table.Cell>
                   <Table.Cell>{formatTimestamp(run.started_at)}</Table.Cell>
                   <Table.Cell>
-                    <IconButton
-                      variant="transparent"
-                      aria-label={isExpanded ? 'Hide steps' : 'Show steps'}
-                      isDisabled={nodeStates.length === 0}
-                      icon={isExpanded ? <ChevronUpIcon /> : <ChevronDownIcon />}
-                      onClick={() => setExpandedId(isExpanded ? undefined : run.run_id)}
-                    />
-                    <Text marginLeft="spacingXs">{nodeStates.length}</Text>
+                    <Flex alignItems="center" gap="spacingXs">
+                      <IconButton
+                        variant="transparent"
+                        aria-label={isExpanded ? 'Hide steps' : 'Show steps'}
+                        isDisabled={nodeStates.length === 0}
+                        icon={isExpanded ? <ChevronUpIcon /> : <ChevronDownIcon />}
+                        onClick={() => setExpandedId(isExpanded ? undefined : run.run_id)}
+                      />
+                      <Text>{nodeStates.length}</Text>
+                    </Flex>
                   </Table.Cell>
                 </Table.Row>
                 {isExpanded && (

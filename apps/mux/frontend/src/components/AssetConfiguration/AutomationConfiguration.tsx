@@ -1,6 +1,7 @@
 import { FC } from 'react';
-import { Box, Checkbox, FormControl, Note } from '@contentful/f36-components';
+import { Box, Checkbox, FormControl, Note, Text } from '@contentful/f36-components';
 import ExternalLink from '../ExternalLink';
+import DirectiveId from '../DirectiveId';
 import { ROBOTS_DOCS_URL } from '../../util/robots';
 
 /**
@@ -27,6 +28,8 @@ interface AutomationConfigurationProps {
   availableDirectiveIds: string[];
   /** Directive ids selected for this upload. */
   selectedDirectiveIds: string[];
+  /** Configured ids Mux says it does not have. Shown, and not selectable. */
+  missingDirectiveIds?: string[];
   /** id → name, already falling back to the id. See `useRobotsDirectiveNames`. */
   directiveNames?: Record<string, string>;
   onChange: (directiveIds: string[]) => void;
@@ -35,6 +38,7 @@ interface AutomationConfigurationProps {
 const AutomationConfiguration: FC<AutomationConfigurationProps> = ({
   availableDirectiveIds,
   selectedDirectiveIds,
+  missingDirectiveIds = [],
   directiveNames,
   onChange,
 }) => {
@@ -65,20 +69,34 @@ const AutomationConfiguration: FC<AutomationConfigurationProps> = ({
       <Box marginTop="spacingS">
         {availableDirectiveIds.map((directiveId) => {
           const name = directiveNames?.[directiveId] || directiveId;
+          const isMissing = missingDirectiveIds.includes(directiveId);
           return (
-            <Checkbox
-              key={directiveId}
-              id={`mux-directive-${directiveId}`}
-              name={`mux-directive-${directiveId}`}
-              // Omitted when the name *is* the id, so an unresolved directive does not render
-              // the same string twice.
-              helpText={name === directiveId ? undefined : directiveId}
-              isChecked={selectedDirectiveIds.includes(directiveId)}
-              onChange={(event) =>
-                toggle(directiveId, (event.target as HTMLInputElement).checked)
-              }>
-              {name === directiveId ? <code>{directiveId}</code> : name}
-            </Checkbox>
+            <Box key={directiveId} marginBottom="spacingXs">
+              <Checkbox
+                id={`mux-directive-${directiveId}`}
+                name={`mux-directive-${directiveId}`}
+                isDisabled={isMissing}
+                isChecked={!isMissing && selectedDirectiveIds.includes(directiveId)}
+                onChange={(event) =>
+                  toggle(directiveId, (event.target as HTMLInputElement).checked)
+                }>
+                {name === directiveId ? <DirectiveId id={directiveId} /> : name}
+              </Checkbox>
+              {/* The Checkbox's own `helpText` is a string, which cannot wrap an id with no spaces
+                  in it; the same tokens and indent, by hand. Omitted when the label already is
+                  the id, so an unresolved directive does not render the same string twice. */}
+              {name !== directiveId && (
+                <Text as="p" fontColor="gray500" marginLeft="spacingL" isWordBreak>
+                  {directiveId}
+                </Text>
+              )}
+              {isMissing && (
+                <Text as="p" fontColor="gray500" marginLeft="spacingL">
+                  Mux does not have this directive, so it will not run. It was deleted, or the
+                  app&apos;s configuration changed after this page loaded — reloading picks that up.
+                </Text>
+              )}
+            </Box>
           );
         })}
       </Box>

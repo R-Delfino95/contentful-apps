@@ -94,6 +94,11 @@ interface RobotsPanelProps {
   defaultDirectiveIds: string[];
 }
 
+type DirectiveListing =
+  | { status: 'pending' }
+  | { status: 'loaded'; directives: RobotsDirective[] }
+  | { status: 'failed' };
+
 /**
  * The asset gate, and it is a gate rather than an early return inside the panel.
  *
@@ -133,7 +138,12 @@ const RobotsPanelForAsset: FC<RobotsPanelProps & { assetId: string }> = ({
   defaultDirectiveIds,
   assetId,
 }) => {
-  const [directives, setDirectives] = useState<RobotsDirective[]>([]);
+  /**
+   * The account's directives, for the picker. `failed` is the only state that falls back to the
+   * configured ids: those come from installation parameters the web app handed this iframe when
+   * it loaded, and can name a directive that has since been deleted or replaced (ADR-0009).
+   */
+  const [directiveListing, setDirectiveListing] = useState<DirectiveListing>({ status: 'pending' });
   const [selectedDirectiveId, setSelectedDirectiveId] = useState('');
   const [cancellingIds, setCancellingIds] = useState<string[]>([]);
   const [isRunModalShown, setIsRunModalShown] = useState(false);
@@ -264,6 +274,7 @@ const RobotsPanelForAsset: FC<RobotsPanelProps & { assetId: string }> = ({
     detailedJobIds,
     failedDetailIds,
     loadingDetailIds,
+    pendingDetailIds,
     loadJobDetail,
     rememberJobDetail,
   } = useRobotsJobDetails(muxApi, jobs, isMountedRef);
@@ -271,24 +282,37 @@ const RobotsPanelForAsset: FC<RobotsPanelProps & { assetId: string }> = ({
   /** The runs this asset's jobs name, which is how a run started outside Contentful is found. */
   const runsNamedByJobs = useMemo(() => directiveRunRefsFromJobs(enrichedJobs), [enrichedJobs]);
 
-  const { directiveRuns, claimingRuns, loadDirectiveRuns, addDirectiveRun } =
-    useRobotsDirectiveRuns({
-      muxApi,
-      assetId,
-      defaultDirectiveIds,
-      recordedRuns: value?.robotsDirectiveRuns,
-      runsNamedByJobs,
-      isMountedRef,
-    });
+  const {
+    directiveRuns,
+    claimingRuns,
+    loadDirectiveRuns,
+    addDirectiveRun,
+    isPending: areDirectiveRunsPending,
+  } = useRobotsDirectiveRuns({
+    muxApi,
+    assetId,
+    defaultDirectiveIds,
+    recordedRuns: value?.robotsDirectiveRuns,
+    runsNamedByJobs,
+    isMountedRef,
+  });
 
   const loadDirectives = useCallback(async () => {
     if (!muxApi) return;
     try {
       const response = await muxApi.listRobotsDirectives({ limit: 100 });
-      if (isMountedRef.current) setDirectives(response.data ?? []);
+      if (isMountedRef.current) {
+        setDirectiveListing({ status: 'loaded', directives: response.data ?? [] });
+      }
     } catch (error) {
-      // Not worth blocking the tab over — ad-hoc runs fall back to the ids configured at install.
+      // Not worth blocking the tab over. A re-list that fails keeps the listing it had; only a
+      // first one falls back to the ids configured at install.
       console.error('[robots] Could not list directives', error);
+      if (isMountedRef.current) {
+        setDirectiveListing((previous) =>
+          previous.status === 'loaded' ? previous : { status: 'failed' }
+        );
+      }
     }
   }, [muxApi]);
 
@@ -317,9 +341,11 @@ const RobotsPanelForAsset: FC<RobotsPanelProps & { assetId: string }> = ({
    * the question and the probe was a round trip spent learning something the next one would say.
    * The per-session cache it existed for is unchanged — `refresh` fills it now.
    *
-   * What is left is one parallel pass: the job list and the directive runs together. An install
-   * that never enabled Robots configures no directives, so `loadDirectiveRuns` makes no call at
-   * all there and the non-enabled case still costs exactly one failed request.
+   * What is left is one parallel pass: the job list and the directive runs together, and the
+   * directive listing beside them once Robots is known to be on. An install that never enabled
+   * Robots configures no directives, so neither of the other two makes a call there and the
+   * non-enabled case still costs exactly one failed request. The table paints when the list
+   * answers — the asset resync it sets off is not awaited (see `useRobotsJobList`).
    */
   useEffect(() => {
     // `isActive` is what keeps Robots free for editors who never open this tab — but an entry
@@ -357,18 +383,21 @@ const RobotsPanelForAsset: FC<RobotsPanelProps & { assetId: string }> = ({
   }, [isActive, capability?.state, hasLoadedOnce, loadDirectiveRuns]);
 
   /**
-   * Directive *names*, for the picker.
+   * The directive listing, for the picker.
    *
-   * Cosmetic, so it is deliberately off the path to the job table: it waits for the list read to
-   * confirm Robots is available and then runs on its own, instead of being the third serialized
-   * round trip in front of everything the editor came to see.
+   * Off the path to the job table, and in parallel with it once Robots is known to be on: from
+   * the session cache, or because directives are configured, which an install without Robots
+   * never has. Otherwise it waits for the list read to answer, so a non-Robots install still
+   * costs one request per session (ADR-0006).
    */
+  const isKnownEnabled = capability?.state === 'enabled';
+  const mayListDirectives = isKnownEnabled || (!capability && defaultDirectiveIds.length > 0);
   useEffect(() => {
-    if (!isActive || capability?.state !== 'enabled' || !hasLoadedOnce) return;
+    if (!isActive || !mayListDirectives) return;
     if (hasLoadedDirectivesRef.current) return;
     hasLoadedDirectivesRef.current = true;
     loadDirectives();
-  }, [isActive, capability?.state, hasLoadedOnce, loadDirectives]);
+  }, [isActive, mayListDirectives, loadDirectives]);
 
   /**
    * Re-check an unconfirmed create against the job list, once per refresh.
@@ -546,7 +575,15 @@ const RobotsPanelForAsset: FC<RobotsPanelProps & { assetId: string }> = ({
         ownJobIds: startedHereIds,
       }).map((job) => job.id)
     );
-    return new Set(enrichedJobs.filter((job) => !claimed.has(job.id)).map((job) => job.id));
+    // Not said of a row whose ownership is still being read — its detail can carry our
+    // passthrough, and the runs can claim it. Said a moment late rather than taken back.
+    return new Set(
+      enrichedJobs
+        .filter(
+          (job) => !claimed.has(job.id) && !pendingDetailIds.has(job.id) && !areDirectiveRunsPending
+        )
+        .map((job) => job.id)
+    );
   }, [
     value?.robotsJobs,
     value?.robotsDirectiveRuns,
@@ -554,6 +591,8 @@ const RobotsPanelForAsset: FC<RobotsPanelProps & { assetId: string }> = ({
     claimingRuns,
     scope,
     startedHereIds,
+    pendingDetailIds,
+    areDirectiveRunsPending,
   ]);
 
   /**
@@ -783,9 +822,14 @@ const RobotsPanelForAsset: FC<RobotsPanelProps & { assetId: string }> = ({
     return <RobotsCapabilityNote state={capability.state} termsUrl={capability.termsUrl} />;
   }
 
+  // Nothing is known about the account yet, so no furniture: for most installs the answer is that
+  // Robots is off and the tab is about to become a note. Once the session knows Robots is on, the
+  // tab renders the moment it is opened, and only what is still being read says so. A tab nobody
+  // has opened stays the inert placeholder either way.
+  //
   // Not `&& isLoading`: effects run after render, so the first render with `isActive` true has not
   // started loading yet, and an empty job table would flash before the spinner.
-  if (!hasLoadedOnce) {
+  if (!hasLoadedOnce && !(isKnownEnabled && isActive)) {
     return (
       <Box marginTop="spacingM">
         <Skeleton.Container>
@@ -824,11 +868,31 @@ const RobotsPanelForAsset: FC<RobotsPanelProps & { assetId: string }> = ({
     ? undefined
     : 'Run a Summarize workflow to apply its title, description and tags to this entry’s own fields.';
 
-  const availableDirectives = directives.length
-    ? directives
-    : defaultDirectiveIds.map((id) => ({ id, name: id }) as RobotsDirective);
+  const availableDirectives =
+    directiveListing.status === 'loaded'
+      ? directiveListing.directives
+      : directiveListing.status === 'failed'
+      ? defaultDirectiveIds.map((id) => ({ id, name: id } as RobotsDirective))
+      : [];
+  // A choice the latest listing no longer offers is no choice: running it would be a 404.
+  const chosenDirectiveId = availableDirectives.some(
+    (directive) => directive.id === selectedDirectiveId
+  )
+    ? selectedDirectiveId
+    : '';
+  const directivePrompt =
+    directiveListing.status === 'pending'
+      ? 'Loading directives…'
+      : availableDirectives.length > 0
+      ? 'Select a directive'
+      : directiveListing.status === 'loaded'
+      ? 'No directives in this Mux account'
+      : 'Could not list directives';
 
-  const directiveNames = directiveNamesById(directives, defaultDirectiveIds);
+  const directiveNames = directiveNamesById(
+    directiveListing.status === 'loaded' ? directiveListing.directives : [],
+    defaultDirectiveIds
+  );
 
   return (
     <Box marginTop="spacingS">
@@ -864,6 +928,9 @@ const RobotsPanelForAsset: FC<RobotsPanelProps & { assetId: string }> = ({
           onClick={() => {
             refresh();
             loadDirectiveRuns();
+            // The picker too: a directive created or deleted in Mux reaches it here, rather
+            // than only on a reload.
+            loadDirectives();
           }}>
           Refresh
         </Button>
@@ -897,17 +964,23 @@ const RobotsPanelForAsset: FC<RobotsPanelProps & { assetId: string }> = ({
 
       {advisory && <RobotsCapabilityNote state={advisory} />}
 
-      <RobotsJobTable
-        jobs={enrichedJobs}
-        startedElsewhereIds={startedElsewhereIds}
-        detailedJobIds={detailedJobIds}
-        unreadableJobIds={failedDetailIds}
-        onCancel={handleCancel}
-        onViewOutput={setViewedJob}
-        onLoadDetail={loadJobDetail}
-        cancellingIds={cancellingIds}
-        loadingDetailIds={loadingDetailIds}
-      />
+      {/* A list that failed is not a list with nothing in it: the note above says what happened,
+          and "No Robots jobs have run on this video yet" would be a claim nobody checked. */}
+      {!(loadError && enrichedJobs.length === 0) && (
+        <RobotsJobTable
+          jobs={enrichedJobs}
+          startedElsewhereIds={startedElsewhereIds}
+          detailedJobIds={detailedJobIds}
+          unreadableJobIds={failedDetailIds}
+          onCancel={handleCancel}
+          onViewOutput={setViewedJob}
+          onLoadDetail={loadJobDetail}
+          cancellingIds={cancellingIds}
+          loadingDetailIds={loadingDetailIds}
+          pendingDetailIds={pendingDetailIds}
+          isLoading={!hasLoadedOnce}
+        />
+      )}
 
       <Box marginTop="spacingL">
         <Subheading marginBottom="spacingXs">Directives</Subheading>
@@ -919,14 +992,16 @@ const RobotsPanelForAsset: FC<RobotsPanelProps & { assetId: string }> = ({
           <Box style={{ minWidth: '18rem' }}>
             <Select
               id="robots-directive"
-              value={selectedDirectiveId}
+              aria-label="Directive"
+              value={chosenDirectiveId}
+              isDisabled={availableDirectives.length === 0}
               onChange={(event) =>
                 setSelectedDirectiveId((event.target as HTMLSelectElement).value)
               }>
-              <Select.Option value="">Select a directive</Select.Option>
+              <Select.Option value="">{directivePrompt}</Select.Option>
               {availableDirectives.map((directive) => (
                 <Select.Option key={directive.id} value={directive.id}>
-                  {directive.name ?? directive.id}
+                  {directive.name || directive.id}
                 </Select.Option>
               ))}
             </Select>
@@ -934,7 +1009,7 @@ const RobotsPanelForAsset: FC<RobotsPanelProps & { assetId: string }> = ({
           <Button
             variant="secondary"
             isDisabled={
-              !selectedDirectiveId || !!directiveRunDisabledReason || isStartingDirectiveRun
+              !chosenDirectiveId || !!directiveRunDisabledReason || isStartingDirectiveRun
             }
             title={directiveRunDisabledReason}
             onClick={handleRunDirective}>
@@ -960,7 +1035,11 @@ const RobotsPanelForAsset: FC<RobotsPanelProps & { assetId: string }> = ({
           </Box>
         )}
 
-        <RobotsDirectiveRunTable runs={directiveRuns} directiveNames={directiveNames} />
+        <RobotsDirectiveRunTable
+          runs={directiveRuns}
+          directiveNames={directiveNames}
+          isLoading={areDirectiveRunsPending}
+        />
       </Box>
 
       <RobotsRunModal
@@ -971,6 +1050,7 @@ const RobotsPanelForAsset: FC<RobotsPanelProps & { assetId: string }> = ({
         captions={captions}
         audioTracks={audioTracks}
         isAudioOnly={value?.audioOnly}
+        duration={value?.is_live ? undefined : value?.duration}
         isRunDisabled={!!runDisabledReason || isStartingRun}
         runDisabledReason={runDisabledReason}
       />

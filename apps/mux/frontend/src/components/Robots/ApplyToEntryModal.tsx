@@ -25,6 +25,7 @@ import {
   wouldOverwrite,
 } from '../../util/robotsEntryMapping';
 import { RobotsOutputs } from '../../util/robotsTypes';
+import FieldModal from '../FieldModal';
 
 /**
  * "Apply summary" — and the mapping UI, in one dialog.
@@ -123,7 +124,7 @@ const ApplyToEntryModal: FC<ApplyToEntryModalProps> = ({ isShown, onClose, sdk, 
   const selectedCount = candidates.filter((candidate) => !!targets[candidate.key]).length;
 
   return (
-    <Modal isShown={isShown} onClose={onClose} size="large">
+    <FieldModal isShown={isShown} onClose={onClose} size="large">
       {() => (
         <>
           <Modal.Header title="Apply summary to this entry" onClose={onClose} />
@@ -192,7 +193,7 @@ const ApplyToEntryModal: FC<ApplyToEntryModalProps> = ({ isShown, onClose, sdk, 
           </Modal.Controls>
         </>
       )}
-    </Modal>
+    </FieldModal>
   );
 };
 

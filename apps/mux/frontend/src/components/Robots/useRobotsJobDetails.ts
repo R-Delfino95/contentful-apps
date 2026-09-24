@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { MuxApiService } from '../../util/muxApi';
-import { jobsNeedingDetail } from '../../util/robots';
+import { jobsAwaitingDetail, jobsNeedingDetail } from '../../util/robots';
 import { RobotsJob } from '../../util/robotsTypes';
 
 /**
@@ -30,6 +30,8 @@ export interface RobotsJobDetails {
   failedDetailIds: Set<string>;
   /** Ids with an on-demand read in flight. */
   loadingDetailIds: string[];
+  /** Ids the background pass has yet to read, whose Units are therefore on their way. */
+  pendingDetailIds: Set<string>;
   loadJobDetail: (job: RobotsJob) => Promise<void>;
   /**
    * Keeps a record the caller already holds — what the output modal fetched, or a job adopted by
@@ -157,11 +159,18 @@ export function useRobotsJobDetails(
 
   const detailedJobIds = useMemo(() => new Set(Object.keys(jobDetails)), [jobDetails]);
 
+  // No client means no jobs: every job here came from a read or a create through it.
+  const pendingDetailIds = useMemo(() => {
+    const attempted = new Set([...Object.keys(jobDetails), ...failedDetailIds]);
+    return new Set(jobsAwaitingDetail(jobs, attempted).map((job) => job.id));
+  }, [jobs, jobDetails, failedDetailIds]);
+
   return {
     enrichedJobs,
     detailedJobIds,
     failedDetailIds,
     loadingDetailIds,
+    pendingDetailIds,
     loadJobDetail,
     rememberJobDetail,
   };

@@ -10,6 +10,7 @@ import { MuxContentfulObject, PolicyType } from '../../util/types';
 import { FieldExtensionSDK } from '@contentful/app-sdk';
 import { MuxApiService } from '../../util/muxApi';
 import { useRobotsDirectiveNames } from '../Robots/useRobotsDirectiveNames';
+import FieldModal from '../FieldModal';
 
 // Audio file extensions for detection
 const AUDIO_EXTENSIONS = [
@@ -104,7 +105,11 @@ const ModalContent: FC<MuxAssetConfigurationModalProps> = ({
 
   // Resolved only for a real upload — editing an existing asset creates nothing, so it has no
   // Automation section to label. Not awaited anywhere: the ids render until the names arrive.
-  const directiveNames = useRobotsDirectiveNames(muxApi, defaultDirectiveIds, !isEditMode);
+  const { names: directiveNames, missingIds: missingDirectiveIds } = useRobotsDirectiveNames(
+    muxApi,
+    defaultDirectiveIds,
+    !isEditMode
+  );
 
   // DRM is disabled for audio files
   const effectiveDRMEnabled = muxEnableDRM && !isAudioOnly;
@@ -148,6 +153,16 @@ const ModalContent: FC<MuxAssetConfigurationModalProps> = ({
         : prev
     );
   }, [defaultDirectiveIds]);
+
+  // Those parameters are a snapshot from when this page loaded, and can name a directive Mux no
+  // longer has. It cannot run, so it is not attached — as soon as a complete listing says so.
+  useEffect(() => {
+    if (missingDirectiveIds.length === 0) return;
+    setModalData((prev) => {
+      const kept = prev.directiveIds.filter((id) => !missingDirectiveIds.includes(id));
+      return kept.length === prev.directiveIds.length ? prev : { ...prev, directiveIds: kept };
+    });
+  }, [missingDirectiveIds]);
 
   // Update policy when audio detection changes (e.g., when modal opens with new file)
   useEffect(() => {
@@ -216,7 +231,7 @@ const ModalContent: FC<MuxAssetConfigurationModalProps> = ({
   const isFormValid = Object.values(validationState).every((isValid) => isValid);
 
   return (
-    <Modal isShown={isShown} onClose={onClose}>
+    <FieldModal isShown={isShown} onClose={onClose}>
       <Modal.Header
         title={isEditMode ? 'Edit Mux Asset' : 'Configure Mux Upload'}
         onClose={onClose}
@@ -305,6 +320,7 @@ const ModalContent: FC<MuxAssetConfigurationModalProps> = ({
                 <AutomationConfiguration
                   availableDirectiveIds={defaultDirectiveIds}
                   selectedDirectiveIds={modalData.directiveIds}
+                  missingDirectiveIds={missingDirectiveIds}
                   directiveNames={directiveNames}
                   onChange={(directiveIds) => setModalData((prev) => ({ ...prev, directiveIds }))}
                 />
@@ -326,7 +342,7 @@ const ModalContent: FC<MuxAssetConfigurationModalProps> = ({
           {isEditMode ? 'Update' : 'Upload'}
         </Button>
       </Modal.Controls>
-    </Modal>
+    </FieldModal>
   );
 };
 

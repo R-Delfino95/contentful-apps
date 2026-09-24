@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import '@testing-library/jest-dom';
 import RobotsRunModal from './RobotsRunModal';
@@ -263,15 +263,78 @@ describe('RobotsRunModal form widgets', () => {
     renderModal({ initialWorkflow: 'find-key-moments' });
     expect(screen.queryByText(/the API requires them together/)).not.toBeInTheDocument();
     expect(screen.queryByText(/Generate captions first, or turn visual evidence on/)).toBeNull();
-    // The useful half lives on the field it concerns.
-    expect(screen.getAllByText(/Set both length bounds, or neither\./).length).toBeGreaterThan(0);
+    // The useful half lives with the fields it concerns, once.
+    expect(screen.getAllByText(/Set both bounds, or neither\./)).toHaveLength(1);
   });
 
-  it('will not run find-scenes on an audio-only video', async () => {
+  it('lists the workflows an audio-only video cannot run, disabled and saying why', () => {
+    renderModal({ isAudioOnly: true });
+    const option = (value: string) =>
+      screen
+        .getByLabelText('Workflow')
+        .querySelector(`option[value="${value}"]`) as HTMLOptionElement;
+
+    for (const value of ['find-scenes', 'find-best-thumbnails']) {
+      expect(option(value)).toBeDisabled();
+      expect(option(value).textContent).toMatch(/\(not available for audio-only\)$/);
+    }
+    // Every other workflow is still on offer.
+    expect(option('find-key-moments')).toBeEnabled();
+    expect(option('moderate')).toBeEnabled();
+    expect(screen.getByLabelText('Workflow').querySelectorAll('option:disabled')).toHaveLength(2);
+  });
+
+  it('disables nothing when the asset kind is unknown or has pictures', () => {
+    for (const isAudioOnly of [undefined, false]) {
+      const { unmount } = render(
+        <RobotsRunModal
+          isShown
+          onClose={vi.fn()}
+          onRun={vi.fn(async () => undefined)}
+          assetId="asset-1"
+          captions={[captionTrack]}
+          audioTracks={[]}
+          isAudioOnly={isAudioOnly}
+          isRunDisabled={false}
+        />
+      );
+      expect(screen.getByLabelText('Workflow').querySelectorAll('option:disabled')).toHaveLength(0);
+      unmount();
+    }
+  });
+
+  it('opens on the default rather than on a workflow this video cannot run', () => {
     renderModal({ isAudioOnly: true, initialWorkflow: 'find-scenes' });
-    expect(
-      await screen.findByText('Find scenes does not support audio-only videos.')
-    ).toBeInTheDocument();
+    expect((screen.getByLabelText('Workflow') as HTMLSelectElement).value).toBe('summarize');
+    expect(screen.getByLabelText('Tone')).toBeInTheDocument();
+  });
+
+  it('moves off a workflow that turns out to be unavailable while the form is open', async () => {
+    // An entry whose value predates `audioOnly` learns it on the next asset read, which can land
+    // after the editor picked find-scenes.
+    const props = {
+      isShown: true,
+      onClose: vi.fn(),
+      onRun: vi.fn(async () => undefined),
+      assetId: 'asset-1',
+      captions: [captionTrack],
+      audioTracks: [],
+      isRunDisabled: false,
+    };
+    const { rerender } = render(<RobotsRunModal {...props} />);
+    await userEvent.selectOptions(screen.getByLabelText('Workflow'), 'find-scenes');
+    await userEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    expect(screen.getByRole('button', { name: 'Run Find scenes' })).toBeInTheDocument();
+
+    rerender(<RobotsRunModal {...props} isAudioOnly />);
+
+    // Off the confirm step it was on, and onto a workflow it can run — never "Run Find scenes".
+    expect(screen.queryByRole('button', { name: /Run Find scenes/ })).not.toBeInTheDocument();
+    expect((screen.getByLabelText('Workflow') as HTMLSelectElement).value).toBe('summarize');
+
+    // And it stays there if the kind goes unknown again, rather than bringing find-scenes back.
+    rerender(<RobotsRunModal {...props} />);
+    expect((screen.getByLabelText('Workflow') as HTMLSelectElement).value).toBe('summarize');
   });
 
   it('does not block find-scenes when the caller does not know the asset kind', async () => {
@@ -301,17 +364,132 @@ describe('RobotsRunModal form widgets', () => {
 
   it("hides moderate's language picker once the asset is known to have pictures", () => {
     renderModal({ initialWorkflow: 'moderate', isAudioOnly: false });
-    expect(screen.queryByLabelText('Transcript language')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Captions to read')).not.toBeInTheDocument();
   });
 
   it('shows it for an audio-only asset', () => {
     renderModal({ initialWorkflow: 'moderate', isAudioOnly: true });
-    expect(screen.getByLabelText('Transcript language')).toBeInTheDocument();
+    expect(screen.getByLabelText('Captions to read')).toBeInTheDocument();
   });
 
   it('shows it when the asset kind is unknown, rather than hiding a usable control', () => {
     renderModal({ initialWorkflow: 'moderate' });
-    expect(screen.getByLabelText('Transcript language')).toBeInTheDocument();
+    expect(screen.getByLabelText('Captions to read')).toBeInTheDocument();
+  });
+
+  it('refuses a scope that ends before it starts, before Continue', async () => {
+    renderModal({ initialWorkflow: 'summarize' });
+    fireEvent.change(screen.getByLabelText('Start time (seconds)'), { target: { value: '90' } });
+    fireEvent.change(screen.getByLabelText('End time (seconds)'), { target: { value: '30' } });
+
+    expect(
+      await screen.findByText('The start time must be before the end time.')
+    ).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Continue' })).toBeDisabled();
+
+    fireEvent.change(screen.getByLabelText('End time (seconds)'), { target: { value: '120' } });
+    expect(screen.queryByText(/must be before the end time/)).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Continue' })).toBeEnabled();
+  });
+
+  it('refuses a start past the end of a video whose length it was given', async () => {
+    renderModal({ initialWorkflow: 'moderate', duration: 60 });
+    fireEvent.change(screen.getByLabelText('Start time (seconds)'), { target: { value: '75' } });
+    expect(
+      await screen.findByText(/past the end of the video, which is 60 seconds long/)
+    ).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Continue' })).toBeDisabled();
+  });
+
+  it('draws a section as one labelled group holding exactly its fields', () => {
+    renderModal({ initialWorkflow: 'summarize' });
+    const tags = screen.getByRole('group', { name: 'Tags' });
+    expect(within(tags).getByLabelText('Number of tags')).toBeInTheDocument();
+    expect(within(tags).getByText('Tag taxonomy')).toBeInTheDocument();
+    expect(within(tags).queryByLabelText('Tone')).not.toBeInTheDocument();
+
+    const scope = screen.getByRole('group', { name: 'Part of the video' });
+    expect(within(scope).getByLabelText('Start time (seconds)')).toBeInTheDocument();
+    expect(within(scope).getByLabelText('End time (seconds)')).toBeInTheDocument();
+    expect(within(scope).getByText(/Leave both empty to use all of it/)).toBeInTheDocument();
+  });
+
+  it('says what an empty premium-captions track name becomes, with no template in the box', () => {
+    renderModal({ initialWorkflow: 'generate-premium-captions' });
+    const trackName = screen.getByLabelText('Track name') as HTMLInputElement;
+    expect(trackName.placeholder).toBe('');
+    expect(screen.getByText(/"English \(Generated\)" for English audio/)).toBeInTheDocument();
+  });
+
+  it("centres each replacement row's case-sensitivity box in its cell", async () => {
+    renderModal({ initialWorkflow: 'edit-captions' });
+    await userEvent.click(screen.getByRole('button', { name: 'Add replacement' }));
+
+    const checkbox = screen.getByLabelText('Case sensitive 1');
+    const cell = checkbox.closest('td') as HTMLElement;
+    expect(cell).toHaveStyle({ verticalAlign: 'middle', textAlign: 'center' });
+    // F36's Checkbox pins its box to the left of a full-width column, so the cell's alignment
+    // alone would not move it; the wrapper directly inside the cell is what centres it.
+    expect(cell.firstElementChild).toHaveStyle({ justifyContent: 'center' });
+  });
+
+  it('middle-aligns the other row editors too', async () => {
+    const { unmount } = render(
+      <RobotsRunModal
+        isShown
+        onClose={vi.fn()}
+        onRun={vi.fn(async () => undefined)}
+        assetId="asset-1"
+        captions={[captionTrack]}
+        audioTracks={[]}
+        isRunDisabled={false}
+        initialWorkflow="ask-questions"
+      />
+    );
+    expect(screen.getByLabelText('Question 1').closest('td')).toHaveStyle({
+      verticalAlign: 'middle',
+    });
+    unmount();
+
+    renderModal({ initialWorkflow: 'summarize' });
+    await userEvent.click(screen.getByRole('button', { name: 'Add value' }));
+    expect(screen.getByLabelText('Taxonomy value 1').closest('td')).toHaveStyle({
+      verticalAlign: 'middle',
+    });
+  });
+
+  it('never draws the confirm step for a workflow the editor did not continue with', async () => {
+    // The swap to the default happens in render; a confirm flag reset by an effect would draw one
+    // frame of Summarize's confirm step in between, with the old workflow's values behind it.
+    const props = {
+      isShown: true,
+      onClose: vi.fn(),
+      onRun: vi.fn(async () => undefined),
+      assetId: 'asset-1',
+      captions: [captionTrack],
+      audioTracks: [],
+      isRunDisabled: false,
+    };
+    const { rerender } = render(<RobotsRunModal {...props} />);
+    await userEvent.selectOptions(screen.getByLabelText('Workflow'), 'find-scenes');
+    await userEvent.click(screen.getByRole('button', { name: 'Continue' }));
+
+    // Everything that reached the DOM, including what was taken out of it again: a step drawn
+    // for one frame and then removed still says what it said when it went.
+    const drawn: string[] = [];
+    const observer = new MutationObserver((records) => {
+      for (const record of records) {
+        record.addedNodes.forEach((node) => drawn.push(node.textContent ?? ''));
+        record.removedNodes.forEach((node) => drawn.push(node.textContent ?? ''));
+      }
+    });
+    observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+    rerender(<RobotsRunModal {...props} isAudioOnly />);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    observer.disconnect();
+
+    expect(drawn.some((text) => /This will run Summarize/.test(text))).toBe(false);
+    expect(props.onRun).not.toHaveBeenCalled();
   });
 
   it('keeps only the two translate-audio notes an editor can act on', () => {

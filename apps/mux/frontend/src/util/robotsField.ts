@@ -383,11 +383,23 @@ export function jobsNeedingDetail(
   alreadyDetailed: Set<string>,
   { limit = 5, window = 20 }: { limit?: number; window?: number } = {}
 ): RobotsJob[] {
+  return jobsAwaitingDetail(jobs, alreadyDetailed, { window }).slice(0, limit);
+}
+
+/**
+ * Every job the background pass will still read, not just the next batch — what the table shows
+ * as loading rather than as "Not loaded". One rule with `jobsNeedingDetail`, so a cell can never
+ * say it is loading a read that will not happen.
+ */
+export function jobsAwaitingDetail(
+  jobs: RobotsJob[],
+  alreadyDetailed: Set<string>,
+  { window = 20 }: { window?: number } = {}
+): RobotsJob[] {
   return [...jobs]
     .sort((a, b) => (b.created_at ?? 0) - (a.created_at ?? 0))
     .slice(0, window)
-    .filter((job) => isTerminalStatus(job.status) && !alreadyDetailed.has(job.id))
-    .slice(0, limit);
+    .filter((job) => isTerminalStatus(job.status) && !alreadyDetailed.has(job.id));
 }
 
 /** A directive run, by the two ids its single-run GET takes. */

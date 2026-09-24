@@ -7,6 +7,7 @@ import {
   FormControl,
   IconButton,
   Select,
+  Subheading,
   Table,
   TextInput,
   Textarea,
@@ -18,10 +19,12 @@ import {
   ReplacementRow,
   RobotsAssetContext,
   RobotsParamField,
+  RobotsParamSection,
   TaxonomyRow,
   asTaxonomyValue,
   emptyQuestionRow,
   emptyTaxonomyRow,
+  groupFieldsBySection,
   isFieldVisible,
 } from '../../util/robotsCatalog';
 import { Track } from '../../util/types';
@@ -71,6 +74,17 @@ const RobotsParamFields: FC<RobotsParamFieldsProps> = ({
 
   const needsLanguageDatalist = fields.some((field) => field.kind === 'language');
 
+  const renderField = (field: RobotsParamField) => (
+    <ParamField
+      key={field.name}
+      field={field}
+      value={values[field.name]}
+      onChange={onChange}
+      captions={captions}
+      audioTracks={audioTracks}
+    />
+  );
+
   return (
     <>
       {needsLanguageDatalist && (
@@ -82,22 +96,45 @@ const RobotsParamFields: FC<RobotsParamFieldsProps> = ({
           ))}
         </datalist>
       )}
-      {fields
-        // A `showWhen` field is hidden *and* unsent when its condition is not met — see
-        // `isFieldVisible`. Keeping both halves keyed off the same predicate is what stops the
-        // form showing one request and sending another.
-        .filter((field) => isFieldVisible(field, values, context))
-        .map((field) => (
-          <ParamField
-            key={field.name}
-            field={field}
-            value={values[field.name]}
-            onChange={onChange}
-            captions={captions}
-            audioTracks={audioTracks}
-          />
-        ))}
+      {/* A `showWhen` field is hidden *and* unsent when its condition is not met — see
+          `isFieldVisible`. Keeping both halves keyed off the same predicate is what stops the
+          form showing one request and sending another. */}
+      {groupFieldsBySection(fields.filter((field) => isFieldVisible(field, values, context))).map(
+        (group) =>
+          group.section ? (
+            <ParamSection key={group.section.id} section={group.section}>
+              {group.fields.map(renderField)}
+            </ParamSection>
+          ) : (
+            group.fields.map(renderField)
+          )
+      )}
     </>
+  );
+};
+
+const ParamSection: FC<{ section: RobotsParamSection; children: React.ReactNode }> = ({
+  section,
+  children,
+}) => {
+  const headingId = `robots-section-${section.id}`;
+  return (
+    <Box
+      role="group"
+      aria-labelledby={headingId}
+      marginTop="spacingL"
+      marginBottom="spacingL"
+      data-testid={headingId}>
+      <Subheading id={headingId} marginBottom="spacingXs">
+        {section.title}
+      </Subheading>
+      {section.description && (
+        <Box marginBottom="spacingS">
+          <FormControl.HelpText>{section.description}</FormControl.HelpText>
+        </Box>
+      )}
+      {children}
+    </Box>
   );
 };
 
@@ -258,7 +295,7 @@ const ParamField: FC<ParamFieldProps> = ({ field, value, onChange, captions, aud
         update(rows.map((existing, i) => (i === index ? { ...existing, ...changes } : existing)));
       return control(
         <>
-          <Table>
+          <Table verticalAlign="middle">
             <Table.Head>
               <Table.Row>
                 <Table.Cell>Question</Table.Cell>
@@ -347,12 +384,12 @@ const ParamField: FC<ParamFieldProps> = ({ field, value, onChange, captions, aud
       return control(
         <>
           {rows.length > 0 && (
-            <Table>
+            <Table verticalAlign="middle">
               <Table.Head>
                 <Table.Row>
                   <Table.Cell>Find</Table.Cell>
                   <Table.Cell>Replace with</Table.Cell>
-                  <Table.Cell>Case sensitive</Table.Cell>
+                  <Table.Cell align="center">Case sensitive</Table.Cell>
                   <Table.Cell />
                 </Table.Row>
               </Table.Head>
@@ -392,24 +429,28 @@ const ParamField: FC<ParamFieldProps> = ({ field, value, onChange, captions, aud
                         }
                       />
                     </Table.Cell>
-                    <Table.Cell>
-                      <Checkbox
-                        id={`robots-replacement-case-${index}`}
-                        isChecked={row.caseSensitive}
-                        onChange={(event) =>
-                          update(
-                            rows.map((existing, i) =>
-                              i === index
-                                ? {
-                                    ...existing,
-                                    caseSensitive: (event.target as HTMLInputElement).checked,
-                                  }
-                                : existing
+                    <Table.Cell align="center">
+                      {/* F36's Checkbox is a full-width column that pins its box to the left, so
+                          the cell's own alignment cannot centre it; this wrapper can. */}
+                      <Flex justifyContent="center">
+                        <Checkbox
+                          id={`robots-replacement-case-${index}`}
+                          aria-label={`Case sensitive ${index + 1}`}
+                          isChecked={row.caseSensitive}
+                          onChange={(event) =>
+                            update(
+                              rows.map((existing, i) =>
+                                i === index
+                                  ? {
+                                      ...existing,
+                                      caseSensitive: (event.target as HTMLInputElement).checked,
+                                    }
+                                  : existing
+                              )
                             )
-                          )
-                        }>
-                        {''}
-                      </Checkbox>
+                          }
+                        />
+                      </Flex>
                     </Table.Cell>
                     <Table.Cell>
                       <IconButton
@@ -488,7 +529,7 @@ const TaxonomyInput: FC<{
       </FormControl>
 
       {rows.length > 0 && (
-        <Table>
+        <Table verticalAlign="middle">
           <Table.Head>
             <Table.Row>
               <Table.Cell>Value</Table.Cell>

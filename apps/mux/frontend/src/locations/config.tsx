@@ -56,6 +56,8 @@ interface IParameters {
 
 interface IState {
   parameters: IParameters;
+  /** As loaded, so the Robots section can tell when the token has been replaced. */
+  savedParameters: IParameters;
   contentTypes: ContentType[];
   compatibleFields: CompatibleFields;
   selectedFields: SelectedFields;
@@ -70,6 +72,7 @@ class Config extends React.Component<ConfigProps, IState> {
     super(props);
     this.state = {
       parameters: {},
+      savedParameters: {},
       contentTypes: [],
       compatibleFields: {},
       selectedFields: {},
@@ -103,6 +106,7 @@ class Config extends React.Component<ConfigProps, IState> {
       // We default to an empty object in this case.
       {
         parameters: parameters || {},
+        savedParameters: parameters || {},
         compatibleFields,
         contentTypes: contentTypesRes.items as ContentType[],
         selectedFields,
@@ -438,6 +442,8 @@ class Config extends React.Component<ConfigProps, IState> {
               <RobotsConfiguration
                 tokenId={muxAccessTokenId}
                 tokenSecret={muxAccessTokenSecret}
+                savedTokenId={this.state.savedParameters.muxAccessTokenId}
+                savedTokenSecret={this.state.savedParameters.muxAccessTokenSecret}
                 directiveIds={muxDefaultDirectiveIds ?? []}
                 onChange={(ids) =>
                   this.setState({

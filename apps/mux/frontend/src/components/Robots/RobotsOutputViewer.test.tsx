@@ -252,7 +252,8 @@ describe('the raw JSON view', () => {
 
     await openRaw();
     const shown = rawText();
-    await userEvent.click(screen.getByRole('button', { name: /copy/i }));
+    // The block's own button, not the one beside the job id.
+    await userEvent.click(screen.getByRole('button', { name: 'Copy to clipboard' }));
 
     await waitFor(() => expect(writeText).toHaveBeenCalledWith(shown));
   });
@@ -294,7 +295,7 @@ describe('the raw JSON view', () => {
     expect(block.tagName).toBe('TEXTAREA');
     expect(block).toHaveClass('copycodearea');
     expect(block.value).toContain('payload text');
-    expect(screen.getByRole('button', { name: /copy/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Copy to clipboard' })).toBeInTheDocument();
   });
 
   /**
@@ -434,7 +435,7 @@ describe('the raw JSON view', () => {
     );
 
     expect(screen.queryByText('A scene')).toBeNull();
-    expect(screen.getByText(/Job rjob_b/)).toBeInTheDocument();
+    expect(screen.getByTestId('robots-job-id')).toHaveTextContent('rjob_b');
     expect(screen.getByText(/Loading the result from Mux/)).toBeInTheDocument();
   });
 
@@ -601,5 +602,78 @@ describe('a cancelled job, if something still opens it', () => {
 
     expect(await screen.findByText('This job was cancelled.')).toBeInTheDocument();
     expect(screen.queryByText(/is still/)).toBeNull();
+  });
+});
+
+/**
+ * The facts above the result. They used to be one line — "Job rjob_… · 48 AI units" — that
+ * the id alone overflowed, wrapping the units onto a line of their own and putting a horizontal
+ * scrollbar on the modal. The overflow itself is checked in a browser; what is pinned here is the
+ * structure that prevents it.
+ */
+describe('the job facts', () => {
+  const LONG_ID = 'rjob_01K5ZQ4XH3N9M2R8T7V6W5Y4X3AB7C9D1E2F3G4H5J6K7M8N9P';
+
+  const facts = () => {
+    const list = screen.getByTestId('robots-job-facts');
+    const pairs: Record<string, string> = {};
+    const terms = Array.from(list.querySelectorAll('dt'));
+    for (const term of terms) {
+      pairs[term.textContent ?? ''] = term.nextElementSibling?.textContent ?? '';
+    }
+    return pairs;
+  };
+
+  it('lists status, units, start and id as a key/value list', () => {
+    show(
+      job({
+        id: LONG_ID,
+        created_at: 1_700_000_000,
+        units_consumed: 48,
+        outputs: { moments: [{ start_ms: 0, end_ms: 1, title: 'A moment' }] },
+      })
+    );
+    const pairs = facts();
+    expect(Object.keys(pairs)).toEqual(['Status', 'AI units', 'Started', 'Job ID']);
+    expect(pairs.Status).toBe('completed');
+    expect(pairs['AI units']).toBe('48');
+    expect(pairs.Started).toBe(new Date(1_700_000_000 * 1000).toLocaleString());
+    expect(pairs['Job ID']).toContain(LONG_ID);
+    // Each label centred on its value: the id's row is as tall as its copy button.
+    const list = screen.getByTestId('robots-job-facts');
+    for (const cell of Array.from(list.querySelectorAll('dt, dd'))) {
+      expect(cell).toHaveStyle({ display: 'flex', alignItems: 'center' });
+    }
+  });
+
+  it('truncates the id rather than letting it widen the modal, and keeps it copyable', () => {
+    show(job({ id: LONG_ID, outputs: { moments: [] } }));
+    const id = screen.getByTestId('robots-job-id');
+    expect(id).toHaveStyle({ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' });
+    // Readable in full on hover, and copied whole.
+    expect(id).toHaveAttribute('title', LONG_ID);
+    expect(screen.getByRole('button', { name: 'Copy job ID' })).toBeInTheDocument();
+  });
+
+  it('says what the units are in the job table’s words, not only as a number', () => {
+    show(job({ status: 'errored', errors: [{ messages: ['Nope'] }] }));
+    expect(facts()['AI units']).toBe('Not charged');
+  });
+
+  it('says the units are loading while the full record is being read', () => {
+    render(
+      <RobotsOutputViewer
+        job={job({ id: 'rjob_pending_read', outputs: undefined })}
+        muxApi={{ getRobotsJob: () => new Promise(() => undefined) } as never}
+        onClose={vi.fn()}
+      />
+    );
+    expect(facts()['AI units']).toBe('Loading…');
+  });
+
+  it('keeps the workflow in the title rather than repeating it in the list', () => {
+    show(job({ outputs: { moments: [] } }));
+    expect(screen.getByRole('heading', { name: 'Find key moments' })).toBeInTheDocument();
+    expect(Object.keys(facts())).not.toContain('Workflow');
   });
 });

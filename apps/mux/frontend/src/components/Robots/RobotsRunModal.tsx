@@ -13,14 +13,19 @@ import {
   Text,
 } from '@contentful/f36-components';
 import ExternalLink from '../ExternalLink';
+import FieldModal from '../FieldModal';
 import {
+  DEFAULT_ROBOTS_WORKFLOW,
   ROBOTS_CATALOG,
   ROBOTS_CATALOG_BY_KEY,
   ROBOTS_CATEGORIES,
+  RobotsAssetContext,
+  availableWorkflow,
   confirmWarnings,
   defaultParamValues,
   paramsFromFormValues,
   validateParams,
+  workflowUnavailableReason,
 } from '../../util/robotsCatalog';
 import { RobotsWorkflow } from '../../util/robotsTypes';
 import { ROBOTS_PRICING_URL } from '../../util/robots';
@@ -39,6 +44,8 @@ interface RobotsRunModalProps {
    * the caller does not know, which must never block a run.
    */
   isAudioOnly?: boolean;
+  /** Seconds, when known. Unknown blocks nothing, the same as `isAudioOnly`. */
+  duration?: number;
   /** True while a create is in flight, or unconfirmed — Run stays disabled either way. */
   isRunDisabled: boolean;
   /** Why Run is unavailable, when it is for a reason worth explaining. */
@@ -54,35 +61,48 @@ const RobotsRunModal: FC<RobotsRunModalProps> = ({
   captions,
   audioTracks,
   isAudioOnly,
+  duration,
   isRunDisabled,
   runDisabledReason,
   initialWorkflow,
 }) => {
-  const [workflow, setWorkflow] = useState<RobotsWorkflow>(initialWorkflow ?? 'summarize');
+  const [selectedWorkflow, setSelectedWorkflow] = useState<RobotsWorkflow>(
+    initialWorkflow ?? DEFAULT_ROBOTS_WORKFLOW
+  );
   const [values, setValues] = useState<Record<string, unknown>>({});
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [confirming, setConfirming] = useState(false);
-
-  const definition = ROBOTS_CATALOG_BY_KEY[workflow];
+  /** The workflow the confirm step is for, so a workflow that changes under it leaves the step. */
+  const [confirmedWorkflow, setConfirmedWorkflow] = useState<RobotsWorkflow | undefined>();
 
   // One context object for all three consumers — which fields render, which are validated, and
   // which are sent. Sharing it is the point: a field hidden because of what the asset is must not
   // then be validated or sent, exactly as with the `showWhen`s that key off another field.
-  const context = useMemo(
-    () => ({ hasCaptions: captions.length > 0, isAudioOnly }),
-    [captions.length, isAudioOnly]
+  const context = useMemo<RobotsAssetContext>(
+    () => ({ hasCaptions: captions.length > 0, isAudioOnly, duration }),
+    [captions.length, isAudioOnly, duration]
   );
+
+  // Derived rather than trusted, because the asset kind can arrive after the choice was made.
+  const workflow = availableWorkflow(selectedWorkflow, context);
+  const definition = ROBOTS_CATALOG_BY_KEY[workflow];
+  const confirming = confirmedWorkflow === workflow;
 
   // Reset the form whenever the modal opens or the workflow changes, so options from a previous
   // workflow can never leak into the next job's parameters.
   useEffect(() => {
     setValues(defaultParamValues(definition.params));
-    setConfirming(false);
+    setConfirmedWorkflow(undefined);
   }, [definition, isShown]);
 
   useEffect(() => {
-    if (isShown && initialWorkflow) setWorkflow(initialWorkflow);
+    if (isShown && initialWorkflow) setSelectedWorkflow(initialWorkflow);
   }, [isShown, initialWorkflow]);
+
+  // Keep the fallback once it has happened, rather than bringing the old choice back if the asset
+  // kind goes unknown again.
+  useEffect(() => {
+    if (selectedWorkflow !== workflow) setSelectedWorkflow(workflow);
+  }, [selectedWorkflow, workflow]);
 
   const errors = useMemo(
     () => validateParams(definition, values, context),
@@ -104,7 +124,7 @@ const RobotsRunModal: FC<RobotsRunModalProps> = ({
     // Belt and braces: the button below is disabled on the same condition, and this is what
     // stops a keyboard or programmatic activation getting past it.
     if (errors.length > 0) return;
-    setConfirming(true);
+    setConfirmedWorkflow(workflow);
   };
 
   const handleConfirm = async () => {
@@ -118,7 +138,7 @@ const RobotsRunModal: FC<RobotsRunModalProps> = ({
   };
 
   return (
-    <Modal isShown={isShown} onClose={onClose} size="large">
+    <FieldModal isShown={isShown} onClose={onClose} size="large">
       {() => (
         <>
           <Modal.Header title={confirming ? 'Confirm this run' : 'Run a Robots workflow'} onClose={onClose} />
@@ -170,17 +190,30 @@ const RobotsRunModal: FC<RobotsRunModalProps> = ({
                   <Select
                     value={workflow}
                     onChange={(event) =>
-                      setWorkflow((event.target as HTMLSelectElement).value as RobotsWorkflow)
+                      setSelectedWorkflow(
+                        (event.target as HTMLSelectElement).value as RobotsWorkflow
+                      )
                     }>
                     {ROBOTS_CATEGORIES.map((category) => (
                       <optgroup key={category} label={category}>
-                        {ROBOTS_CATALOG.filter(
-                          (candidate) => candidate.category === category
-                        ).map((candidate) => (
-                          <Select.Option key={candidate.key} value={candidate.key}>
-                            {candidate.label}
-                          </Select.Option>
-                        ))}
+                        {ROBOTS_CATALOG.filter((candidate) => candidate.category === category).map(
+                          (candidate) => {
+                            // Listed either way, so the editor can see the workflow exists and
+                            // why it is not on offer for this video.
+                            const unavailable = workflowUnavailableReason(candidate, context);
+                            const label = unavailable
+                              ? `${candidate.label} (${unavailable})`
+                              : candidate.label;
+                            return (
+                              <Select.Option
+                                key={candidate.key}
+                                value={candidate.key}
+                                isDisabled={!!unavailable}>
+                                {label}
+                              </Select.Option>
+                            );
+                          }
+                        )}
                       </optgroup>
                     ))}
                   </Select>
@@ -230,7 +263,7 @@ const RobotsRunModal: FC<RobotsRunModalProps> = ({
           <Modal.Controls>
             {confirming ? (
               <>
-                <Button variant="secondary" onClick={() => setConfirming(false)}>
+                <Button variant="secondary" onClick={() => setConfirmedWorkflow(undefined)}>
                   Back
                 </Button>
                 <Button
@@ -262,7 +295,7 @@ const RobotsRunModal: FC<RobotsRunModalProps> = ({
           </Modal.Controls>
         </>
       )}
-    </Modal>
+    </FieldModal>
   );
 };
 

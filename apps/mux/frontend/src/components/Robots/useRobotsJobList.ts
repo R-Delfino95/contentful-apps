@@ -45,7 +45,10 @@ export function useRobotsJobList({
   muxApi?: MuxApiService;
   /** Required: the panel does not mount without an asset, and remounts when it changes. */
   assetId: string;
-  /** Runs inside the fetch, with the freshly read list, before it is stored. */
+  /**
+   * Handed each freshly read list. Not awaited: what it does — resyncing the asset — is a round
+   * trip of its own, and neither the table nor the next tick should wait on it.
+   */
   onJobsFetched: (jobs: RobotsJob[]) => Promise<void> | void;
   isMountedRef: React.MutableRefObject<boolean>;
 }): RobotsJobListState {
@@ -107,7 +110,12 @@ export function useRobotsJobList({
         // it any more.
         recordRobotsCapability({ state: 'enabled' });
 
-        await onJobsFetched(fetched);
+        // Not awaited, and kept out of the catch below. Awaited, it held the first paint for a
+        // whole asset read, and its failure landed in that catch — where an asset GET refused
+        // with a 401 would have been taken for the account losing Robots.
+        void Promise.resolve()
+          .then(() => onJobsFetched(fetched))
+          .catch((error) => console.error('[robots] Could not resync after reading jobs', error));
       } catch (error) {
         if (!isMountedRef.current) return;
         const unavailable = capabilityFromError(error);

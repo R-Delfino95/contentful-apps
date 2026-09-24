@@ -1,5 +1,14 @@
 import { FC } from 'react';
-import { Badge, Box, Button, Table, Text, TextLink, Tooltip } from '@contentful/f36-components';
+import {
+  Badge,
+  Box,
+  Button,
+  Skeleton,
+  Table,
+  Text,
+  TextLink,
+  Tooltip,
+} from '@contentful/f36-components';
 import { RobotsJob, isTerminalStatus } from '../../util/robotsTypes';
 import { workflowLabel } from '../../util/robotsCatalog';
 import { formatTimestamp } from '../../util/robotsFormat';
@@ -79,7 +88,13 @@ interface RobotsJobTableProps {
   cancellingIds: string[];
   /** Job ids with an on-demand detail read in flight. */
   loadingDetailIds: string[];
+  /** Job ids the background pass will read, whose Units are therefore on their way. */
+  pendingDetailIds?: Set<string>;
+  /** The list itself has not arrived: the rows are placeholders, and nothing is claimed empty. */
+  isLoading?: boolean;
 }
+
+const COLUMNS = ['Workflow', 'Status', 'Started', 'Units', 'Actions'];
 
 const detailState = (
   job: RobotsJob,
@@ -101,28 +116,49 @@ const RobotsJobTable: FC<RobotsJobTableProps> = ({
   onLoadDetail,
   cancellingIds,
   loadingDetailIds,
+  pendingDetailIds,
+  isLoading = false,
 }) => {
+  const head = (
+    <Table.Head>
+      <Table.Row>
+        {COLUMNS.map((column) => (
+          <Table.Cell key={column}>{column}</Table.Cell>
+        ))}
+      </Table.Row>
+    </Table.Head>
+  );
+
+  if (isLoading) {
+    return (
+      <Box marginBottom="spacingM">
+        <Table data-testid="robots_job_table_loading" verticalAlign="middle">
+          {head}
+          <Table.Body>
+            <Skeleton.Row rowCount={3} columnCount={COLUMNS.length} />
+          </Table.Body>
+        </Table>
+      </Box>
+    );
+  }
+
   if (jobs.length === 0) {
     return <EmptyTableNote>No Robots jobs have run on this video yet.</EmptyTableNote>;
   }
 
   return (
     <Box marginBottom="spacingM">
-      <Table data-testid="robots_job_table">
-        <Table.Head>
-          <Table.Row>
-            <Table.Cell>Workflow</Table.Cell>
-            <Table.Cell>Status</Table.Cell>
-            <Table.Cell>Started</Table.Cell>
-            <Table.Cell>Units</Table.Cell>
-            <Table.Cell>Actions</Table.Cell>
-          </Table.Row>
-        </Table.Head>
+      {/* Middle, not F36's default top: the action button is taller than the text beside it. */}
+      <Table data-testid="robots_job_table" verticalAlign="middle">
+        {head}
         <Table.Body>
           {jobs.map((job) => {
             const isRunning = job.status === 'pending' || job.status === 'processing';
             const units = unitsCell(job, detailState(job, detailedJobIds, unreadableJobIds));
-            const isLoadingDetail = loadingDetailIds.includes(job.id);
+            // The background read is coming, so this is loading, not "Not loaded".
+            const isLoadingDetail =
+              loadingDetailIds.includes(job.id) ||
+              (units.isLoadable && !!pendingDetailIds?.has(job.id));
             const isCancelling = cancellingIds.includes(job.id);
 
             return (

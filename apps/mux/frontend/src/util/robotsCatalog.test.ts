@@ -1,19 +1,23 @@
 import { describe, expect, it } from 'vitest';
 import {
+  DEFAULT_ROBOTS_WORKFLOW,
   ROBOTS_CATALOG,
   ROBOTS_CATALOG_BY_KEY,
   RobotsParamField,
   TaxonomyRow,
   TaxonomyValue,
+  availableWorkflow,
   buildRobotsParameters,
   confirmWarnings,
   defaultParamValues,
   emptyQuestionRow,
   emptyTaxonomyValue,
+  groupFieldsBySection,
   isFieldVisible,
   paramsFromFormValues,
   toApiParamValue,
   validateParams,
+  workflowUnavailableReason,
 } from './robotsCatalog';
 import { ROBOTS_WORKFLOWS, RobotsWorkflow } from './robotsTypes';
 
@@ -580,12 +584,42 @@ describe('paramsFromFormValues', () => {
 // positives: gating a workflow the docs never restrict costs the editor a run they are entitled
 // to, and this app has no way to check entitlement server-side.
 describe('audio-only assets', () => {
-  it('blocks find-scenes, which the reference says is not supported at all', () => {
-    const definition = ROBOTS_CATALOG_BY_KEY['find-scenes'];
-    expect(validateParams(definition, {}, { isAudioOnly: true })).toContain(
-      'Find scenes does not support audio-only videos.'
+  it('marks find-scenes and find-best-thumbnails unavailable on audio-only, and only them', () => {
+    // find-scenes: "Audio-only assets are not supported." find-best-thumbnails: our decision —
+    // it ranks frames, and an audio-only asset has none. See `requiresVideoTrack`.
+    const unavailable = ROBOTS_CATALOG.filter((definition) =>
+      workflowUnavailableReason(definition, { isAudioOnly: true })
+    ).map((definition) => definition.key);
+    expect(unavailable.sort()).toEqual(['find-best-thumbnails', 'find-scenes']);
+    expect(
+      workflowUnavailableReason(ROBOTS_CATALOG_BY_KEY['find-scenes'], { isAudioOnly: true })
+    ).toBe('not available for audio-only');
+  });
+
+  it('disables nothing when the asset has pictures, or when nobody knows', () => {
+    for (const definition of ROBOTS_CATALOG) {
+      expect(workflowUnavailableReason(definition, { isAudioOnly: false })).toBeUndefined();
+      expect(workflowUnavailableReason(definition, {})).toBeUndefined();
+      expect(workflowUnavailableReason(definition)).toBeUndefined();
+    }
+  });
+
+  it('keeps a workflow the asset can run, and swaps one it cannot for the default', () => {
+    expect(availableWorkflow('find-scenes', { isAudioOnly: false })).toBe('find-scenes');
+    expect(availableWorkflow('find-scenes', {})).toBe('find-scenes');
+    expect(availableWorkflow('find-scenes', { isAudioOnly: true })).toBe(DEFAULT_ROBOTS_WORKFLOW);
+    expect(availableWorkflow('find-best-thumbnails', { isAudioOnly: true })).toBe(
+      DEFAULT_ROBOTS_WORKFLOW
     );
-    expect(validateParams(definition, {}, { isAudioOnly: false })).toEqual([]);
+    expect(availableWorkflow('moderate', { isAudioOnly: true })).toBe('moderate');
+  });
+
+  it('opens on a default every asset can run, which is what the swap relies on', () => {
+    expect(
+      workflowUnavailableReason(ROBOTS_CATALOG_BY_KEY[DEFAULT_ROBOTS_WORKFLOW], {
+        isAudioOnly: true,
+      })
+    ).toBeUndefined();
   });
 
   it('never blocks a run when the caller does not know whether the asset is audio-only', () => {
@@ -639,31 +673,23 @@ describe('audio-only assets', () => {
     expect(validateParams(definition, {})).toEqual([]);
   });
 
-  it('blocks no run on the nine workflows whose reference pages restrict nothing', () => {
+  it('never refuses a whole workflow for the asset kind — that is the picker’s job', () => {
     // Re-swept across all twelve reference pages. Only three mention audio-only assets at all:
     // `find-scenes` ("Audio-only assets are not supported."), `find-key-moments` (`use_shots`
     // "Not supported for audio-only assets", plus "Audio-only assets always use transcript
     // evidence and require a caption track"), and `moderate` — whose mention is about one
     // parameter being ignored, not about the run, so it hides a field rather than refusing a job.
-    // The rest say nothing about the *asset kind*, and gating a workflow the docs never restrict
-    // costs the editor a run they are entitled to.
     //
-    // `generate-chapters` came off this list, and only half-way: it is gated on **captions**, not
-    // on being audio-only, so an audio-only video with a caption track still runs it. That is why
-    // the fixtures below say `hasCaptions: true` — this test is about the asset *kind* and has to
-    // keep asking only that question.
-    const unrestricted: RobotsWorkflow[] = [
-      'generate-premium-captions',
-      'edit-captions',
-      'translate-captions',
-      'translate-audio',
-      'summarize',
-      'ask-questions',
-      'find-best-thumbnails',
-      'generate-engagement-insights',
-      'generate-chapters',
-      'moderate',
-    ];
+    // A workflow that cannot run at all is offered disabled by the picker, from
+    // `requiresVideoTrack`, and cannot be selected — so validation carries no second copy of that
+    // rule. Only `find-key-moments` stays out of this list: its restriction is on a *parameter*.
+    //
+    // `hasCaptions: true` because chapters is gated on captions, not on the asset kind, and this
+    // test has to keep asking only about the kind.
+    const unrestricted = ROBOTS_CATALOG.map((definition) => definition.key).filter(
+      (key): key is RobotsWorkflow => key !== 'find-key-moments'
+    );
+    expect(unrestricted).toHaveLength(11);
     for (const key of unrestricted) {
       const definition = ROBOTS_CATALOG_BY_KEY[key];
       const withAudio = validateParams(definition, defaultParamValues(definition.params), {
@@ -1028,12 +1054,16 @@ describe('workflow notes', () => {
     expect(ROBOTS_CATALOG_BY_KEY['find-key-moments'].notes).toBeUndefined();
   });
 
-  it('puts the length-bounds rule on the bound fields themselves', () => {
+  it('states the length-bounds rule once, on the section both bounds sit in', () => {
     const bounds = ROBOTS_CATALOG_BY_KEY['find-key-moments'].params.filter((field) =>
       field.name.startsWith('target_duration_ms.')
     );
     expect(bounds).toHaveLength(2);
-    for (const field of bounds) expect(field.helpText).toMatch(/both length bounds/);
+    for (const field of bounds) {
+      expect(field.section?.title).toBe('Highlight length');
+      expect(field.section?.description).toMatch(/both bounds, or neither/);
+      expect(field.helpText).toBeUndefined();
+    }
   });
 
   it('never explains a rule by whose rule it is', () => {
@@ -1373,5 +1403,187 @@ describe('controlled vocabularies', () => {
         })
       ).toEqual([]);
     }
+  });
+});
+
+describe('the scope window', () => {
+  const SCOPED = ROBOTS_CATALOG.filter((definition) =>
+    definition.params.some((field) => field.name === 'output_steering.scope.start_time')
+  );
+  const scope = (start?: number, end?: number) => ({
+    'output_steering.scope.start_time': start,
+    'output_steering.scope.end_time': end,
+  });
+
+  it('is on the six workflows that document it, with both bounds', () => {
+    expect(SCOPED.map((definition) => definition.key).sort()).toEqual([
+      'ask-questions',
+      'find-best-thumbnails',
+      'find-key-moments',
+      'find-scenes',
+      'moderate',
+      'summarize',
+    ]);
+    for (const definition of SCOPED) {
+      expect(definition.params.map((field) => field.name)).toContain(
+        'output_steering.scope.end_time'
+      );
+    }
+  });
+
+  it('refuses a window that ends where it starts, or before, on every one of them', () => {
+    for (const definition of SCOPED) {
+      expect(validateParams(definition, scope(90, 30))).toContain(
+        'The start time must be before the end time.'
+      );
+      expect(validateParams(definition, scope(30, 30))).toContain(
+        'The start time must be before the end time.'
+      );
+      expect(validateParams(definition, scope(30, 90))).toEqual(validateParams(definition, {}));
+    }
+  });
+
+  it('leaves a single bound alone — each alone means "from the start" or "to the end"', () => {
+    const definition = ROBOTS_CATALOG_BY_KEY.summarize;
+    expect(validateParams(definition, scope(90, undefined))).toEqual([]);
+    expect(validateParams(definition, scope(undefined, 30))).toEqual([]);
+  });
+
+  it('refuses a start past the end of the video, when its length is known', () => {
+    const definition = ROBOTS_CATALOG_BY_KEY.summarize;
+    expect(validateParams(definition, scope(200, undefined), { duration: 151.24 })).toContain(
+      'The start time is past the end of the video, which is 151.2 seconds long.'
+    );
+    expect(validateParams(definition, scope(151.24, undefined), { duration: 151.24 })).toHaveLength(
+      1
+    );
+    expect(validateParams(definition, scope(150, undefined), { duration: 151.24 })).toEqual([]);
+    // Unknown length blocks nothing, the same as every other asset fact.
+    expect(validateParams(definition, scope(200, undefined))).toEqual([]);
+  });
+
+  it('lets an end past the end of the video through: the window still covers content', () => {
+    expect(
+      validateParams(ROBOTS_CATALOG_BY_KEY.summarize, scope(10, 500), { duration: 151 })
+    ).toEqual([]);
+  });
+
+  it('sends the window as the nested object Mux expects', () => {
+    expect(paramsFromFormValues(ROBOTS_CATALOG_BY_KEY.moderate, 'asset-1', scope(10, 20))).toEqual({
+      asset_id: 'asset-1',
+      output_steering: { scope: { start_time: 10, end_time: 20 } },
+    });
+  });
+});
+
+describe('form sections', () => {
+  it('keeps every section’s fields next to each other, so each renders as one group', () => {
+    for (const definition of ROBOTS_CATALOG) {
+      const groups = groupFieldsBySection(definition.params).filter((group) => group.section);
+      const ids = groups.map((group) => group.section?.id);
+      expect(new Set(ids).size).toBe(ids.length);
+    }
+  });
+
+  it('groups summarize’s tag count with its tag taxonomy, and nothing else', () => {
+    const tags = groupFieldsBySection(ROBOTS_CATALOG_BY_KEY.summarize.params).find(
+      (group) => group.section?.id === 'tags'
+    );
+    expect(tags?.fields.map((field) => field.name)).toEqual([
+      'tag_count',
+      'output_steering.tag_taxonomy',
+    ]);
+  });
+
+  it('puts both scope bounds in one section on every workflow that has them', () => {
+    for (const definition of ROBOTS_CATALOG) {
+      const scope = groupFieldsBySection(definition.params).find(
+        (group) => group.section?.id === 'scope'
+      );
+      const hasScope = definition.params.some((field) =>
+        field.name.startsWith('output_steering.scope.')
+      );
+      expect(scope?.fields.map((field) => field.name) ?? []).toEqual(
+        hasScope ? ['output_steering.scope.start_time', 'output_steering.scope.end_time'] : []
+      );
+    }
+  });
+
+  it('leaves fields without a section standing alone, in catalog order', () => {
+    const groups = groupFieldsBySection(ROBOTS_CATALOG_BY_KEY.summarize.params);
+    expect(groups.flatMap((group) => group.fields)).toEqual(ROBOTS_CATALOG_BY_KEY.summarize.params);
+    expect(groups[0]).toEqual({
+      section: undefined,
+      fields: [ROBOTS_CATALOG_BY_KEY.summarize.params[0]],
+    });
+  });
+
+  it('changes nothing about what is sent', () => {
+    // Presentation only: the same values build the same body with or without the grouping.
+    const values = { tag_count: 5, 'output_steering.scope.start_time': 1 };
+    expect(paramsFromFormValues(ROBOTS_CATALOG_BY_KEY.summarize, 'asset-1', values)).toEqual({
+      asset_id: 'asset-1',
+      tag_count: 5,
+      output_steering: { scope: { start_time: 1 } },
+    });
+  });
+});
+
+describe('what an empty field is said to do', () => {
+  it('shows no placeholder that reads like a template the form fills in', () => {
+    for (const definition of ROBOTS_CATALOG) {
+      for (const field of definition.params) {
+        expect(field.placeholder ?? '').not.toMatch(/[{}]/);
+      }
+    }
+  });
+
+  it("names Mux's default premium-captions track plainly, with an example", () => {
+    const trackName = ROBOTS_CATALOG_BY_KEY['generate-premium-captions'].params.find(
+      (field) => field.name === 'track_name'
+    );
+    expect(trackName?.placeholder).toBeUndefined();
+    expect(trackName?.helpText).toMatch(/Leave empty/);
+    expect(trackName?.helpText).toContain('"English (Generated)"');
+  });
+
+  it('labels every caption-track picker by what it picks, and says what empty means', () => {
+    // `language_code` on these five selects one of the asset's caption tracks — it is not the
+    // language of the result, which is what "Caption track language" was read as.
+    const keys: RobotsWorkflow[] = [
+      'summarize',
+      'ask-questions',
+      'generate-chapters',
+      'find-scenes',
+      'moderate',
+    ];
+    const pickers = keys.map(
+      (key) =>
+        ROBOTS_CATALOG_BY_KEY[key].params.find(
+          (field) => field.name === 'language_code'
+        ) as RobotsParamField
+    );
+    for (const field of pickers) {
+      expect(field.label).toBe('Captions to read');
+      expect(field.helpText).toMatch(/caption track/);
+      expect(field.helpText).toMatch(/leave empty/i);
+    }
+    // Where the workflow also takes an output language, the help says which is which.
+    for (const key of ['summarize', 'generate-chapters'] as RobotsWorkflow[]) {
+      const help = ROBOTS_CATALOG_BY_KEY[key].params.find(
+        (field) => field.name === 'language_code'
+      )?.helpText;
+      expect(help).toMatch(/Output language/);
+    }
+    // And chapters says what the reference says it prefers.
+    expect(pickers[2].helpText).toMatch(/English/);
+  });
+
+  it('no longer calls any field "Caption track language" or "Transcript language"', () => {
+    const labels = ROBOTS_CATALOG.flatMap((definition) =>
+      definition.params.map((field) => field.label)
+    );
+    expect(labels).not.toContain('Caption track language');
+    expect(labels).not.toContain('Transcript language');
   });
 });

@@ -13,6 +13,7 @@ import {
 } from '@contentful/f36-components';
 import { CycleIcon, PlusIcon } from '@contentful/f36-icons';
 import ExternalLink from './ExternalLink';
+import DirectiveId from './DirectiveId';
 import RobotsCapabilityNote from './Robots/RobotsCapabilityNote';
 import ApiClient from '../util/apiClient';
 import { muxApiErrorFromResponse } from '../util/muxApi';
@@ -33,11 +34,19 @@ import { ROBOTS_DOCS_URL, capabilityFromError } from '../util/robots';
  * exception, and whether it covers `/robots/v0/*` as well as the Video API paths is not settled.
  * So the picker degrades rather than breaking: if the fetch fails, directive ids can be pasted by
  * hand and everything downstream works identically. The list is a convenience, not the mechanism.
+ *
+ * **A listing is evidence about the credentials it was read with, and no others.** A selected
+ * id the account does not have — deleted in Mux, or chosen under a different token — cannot run,
+ * and used to sit here unmarked through every save. It is shown as missing, with a way to remove
+ * it, but only once a *complete* listing for the token in the form says so. See ADR-0009.
  */
 
 interface RobotsConfigurationProps {
   tokenId?: string;
   tokenSecret?: string;
+  /** The token the saved configuration was loaded with, to tell when it has been replaced. */
+  savedTokenId?: string;
+  savedTokenSecret?: string;
   directiveIds: string[];
   onChange: (directiveIds: string[]) => void;
 }
@@ -46,29 +55,37 @@ interface RobotsConfigurationProps {
 const PAGE_SIZE = 100;
 const MAX_PAGES = 10;
 
+/** One press of "List directives", kept with the credentials it was made with. */
+interface DirectiveListing {
+  tokenId: string;
+  tokenSecret: string;
+  directives: RobotsDirective[];
+  /** Every page read. Only then does an id's absence mean the account does not have it. */
+  isComplete: boolean;
+  loadError?: string;
+  unavailable?: ReturnType<typeof capabilityFromError>;
+}
+
 const RobotsConfiguration: FC<RobotsConfigurationProps> = ({
   tokenId,
   tokenSecret,
+  savedTokenId,
+  savedTokenSecret,
   directiveIds,
   onChange,
 }) => {
-  const [directives, setDirectives] = useState<RobotsDirective[]>([]);
+  const [listing, setListing] = useState<DirectiveListing | undefined>();
   const [isLoading, setIsLoading] = useState(false);
-  const [loadError, setLoadError] = useState<string | undefined>();
-  const [unavailable, setUnavailable] = useState<ReturnType<typeof capabilityFromError>>();
-  const [hasTried, setHasTried] = useState(false);
   const [manualId, setManualId] = useState('');
 
   const hasCredentials = !!tokenId && !!tokenSecret;
 
   const loadDirectives = useCallback(async () => {
-    if (!hasCredentials) return;
+    if (!tokenId || !tokenSecret) return;
     setIsLoading(true);
-    setLoadError(undefined);
-    setUnavailable(undefined);
 
-    const apiClient = new ApiClient(tokenId as string, tokenSecret as string);
-    const collected: RobotsDirective[] = [];
+    const apiClient = new ApiClient(tokenId, tokenSecret);
+    const next: DirectiveListing = { tokenId, tokenSecret, directives: [], isComplete: false };
 
     try {
       for (let page = 1; page <= MAX_PAGES; page += 1) {
@@ -81,30 +98,30 @@ const RobotsConfiguration: FC<RobotsConfigurationProps> = ({
           // read every 403 as a missing scope, and told an account that had only not accepted
           // the terms to throw away a working token.
           const capability = capabilityFromError(await muxApiErrorFromResponse(response));
-          if (capability) setUnavailable(capability);
-          else setLoadError(`Mux returned ${response.status} when listing directives.`);
+          if (capability) next.unavailable = capability;
+          else next.loadError = `Mux returned ${response.status} when listing directives.`;
           break;
         }
 
         const body = await response.json();
         const items: RobotsDirective[] = body?.data ?? [];
-        collected.push(...items);
-        if (items.length < PAGE_SIZE) break;
+        next.directives.push(...items);
+        if (items.length < PAGE_SIZE) {
+          next.isComplete = true;
+          break;
+        }
       }
-
-      setDirectives(collected);
     } catch (error) {
       // A CORS rejection surfaces as a TypeError with no useful detail, which is exactly the case
       // the manual entry below exists for.
-      setLoadError(
-        'Could not reach the Mux Robots API from the browser. Paste directive IDs below instead.'
-      );
+      next.loadError =
+        'Could not reach the Mux Robots API from the browser. Paste directive IDs below instead.';
       console.error('[robots] Directive listing failed', error);
     } finally {
+      setListing(next);
       setIsLoading(false);
-      setHasTried(true);
     }
-  }, [hasCredentials, tokenId, tokenSecret]);
+  }, [tokenId, tokenSecret]);
 
   // Deliberately no fetch on mount.
   //
@@ -112,6 +129,13 @@ const RobotsConfiguration: FC<RobotsConfigurationProps> = ({
   // Robots. Listing directives automatically would fire a cross-origin request to
   // `api.mux.com/robots/v0/directives` for all of them and, on a 403, put an error notice on a
   // configuration screen they came to for something else. Nothing happens until someone asks.
+
+  /** The listing, only while it is about the token in the form. */
+  const current =
+    listing && listing.tokenId === tokenId && listing.tokenSecret === tokenSecret
+      ? listing
+      : undefined;
+  const directives = current?.directives ?? [];
 
   const toggle = (directiveId: string, isChecked: boolean) => {
     onChange(
@@ -130,6 +154,13 @@ const RobotsConfiguration: FC<RobotsConfigurationProps> = ({
 
   const knownIds = new Set(directives.map((directive) => directive.id));
   const unlistedIds = directiveIds.filter((id) => !knownIds.has(id));
+  const missingIds = current?.isComplete ? unlistedIds : [];
+  const uncheckedIds = current?.isComplete ? [] : unlistedIds;
+
+  // Flagged, not cleared: a new token for the same Mux environment keeps every directive valid,
+  // and clearing would drop the automation of an admin who was only rotating it.
+  const isTokenReplaced =
+    !!savedTokenId && (tokenId !== savedTokenId || tokenSecret !== savedTokenSecret);
 
   return (
     <>
@@ -163,6 +194,15 @@ const RobotsConfiguration: FC<RobotsConfigurationProps> = ({
 
       {hasCredentials && (
         <Box marginTop="spacingM">
+          {isTokenReplaced && directiveIds.length > 0 && !current?.isComplete && (
+            <Box marginBottom="spacingM">
+              <Note variant="warning" title="The Mux token has changed">
+                The directives selected here were chosen with the previous token and may not exist
+                in this account. List the directives to check them.
+              </Note>
+            </Box>
+          )}
+
           <Flex alignItems="center" gap="spacingS" marginBottom="spacingS">
             <Button
               size="small"
@@ -175,47 +215,86 @@ const RobotsConfiguration: FC<RobotsConfigurationProps> = ({
             {isLoading && <Spinner size="small" />}
           </Flex>
 
-          {loadError && (
+          {current?.loadError && (
             <Box marginBottom="spacingM">
-              <Note variant="warning">{loadError}</Note>
+              <Note variant="warning">{current.loadError}</Note>
             </Box>
           )}
 
-          {unavailable && (
-            <RobotsCapabilityNote state={unavailable.state} termsUrl={unavailable.termsUrl} />
+          {current?.unavailable && (
+            <RobotsCapabilityNote
+              state={current.unavailable.state}
+              termsUrl={current.unavailable.termsUrl}
+            />
           )}
 
           {directives.map((directive) => (
-            <Checkbox
-              key={directive.id}
-              id={`mux-robots-directive-${directive.id}`}
-              name={`mux-robots-directive-${directive.id}`}
-              helpText={directive.id}
-              isChecked={directiveIds.includes(directive.id)}
-              onChange={(event) =>
-                toggle(directive.id, (event.target as HTMLInputElement).checked)
-              }>
-              {directive.name || directive.id}
-            </Checkbox>
+            <Box key={directive.id} marginBottom="spacingXs">
+              <Checkbox
+                id={`mux-robots-directive-${directive.id}`}
+                name={`mux-robots-directive-${directive.id}`}
+                isChecked={directiveIds.includes(directive.id)}
+                onChange={(event) =>
+                  toggle(directive.id, (event.target as HTMLInputElement).checked)
+                }>
+                {directive.name || <DirectiveId id={directive.id} />}
+              </Checkbox>
+              {/* In place of the Checkbox's own `helpText`, which is a string and so cannot be told
+                  to wrap an id that has no spaces in it. The same text tokens and indent. */}
+              {directive.name && (
+                <Text as="p" fontColor="gray500" marginLeft="spacingL" isWordBreak>
+                  {directive.id}
+                </Text>
+              )}
+            </Box>
           ))}
 
-          {hasTried && !isLoading && directives.length === 0 && !loadError && !unavailable && (
+          {current?.isComplete && directives.length === 0 && (
             <Note variant="neutral">
               This Mux account has no directives yet. Create one in Mux, then reload.
             </Note>
           )}
 
-          {unlistedIds.length > 0 && (
+          {missingIds.length > 0 && (
+            <Box marginTop="spacingM">
+              <Note
+                variant="negative"
+                title="Selected, but not in this Mux account"
+                data-testid="robots-directives-missing">
+                These were deleted in Mux, or chosen with a different token, so they cannot run.
+                Remove them and save.
+                {missingIds.map((id) => (
+                  <Flex key={id} alignItems="center" gap="spacingS" marginTop="spacingS">
+                    <DirectiveId id={id} />
+                    <Button
+                      size="small"
+                      variant="secondary"
+                      aria-label={`Remove ${id}`}
+                      onClick={() => toggle(id, false)}>
+                      Remove
+                    </Button>
+                  </Flex>
+                ))}
+              </Note>
+            </Box>
+          )}
+
+          {uncheckedIds.length > 0 && (
             <Box marginTop="spacingM">
               <Text fontWeight="fontWeightDemiBold">Selected by ID</Text>
-              {unlistedIds.map((id) => (
+              {!current && (
+                <FormControl.HelpText marginTop="none">
+                  Not checked against this Mux account yet — list the directives to check.
+                </FormControl.HelpText>
+              )}
+              {uncheckedIds.map((id) => (
                 <Checkbox
                   key={id}
                   id={`mux-robots-directive-manual-${id}`}
                   name={`mux-robots-directive-manual-${id}`}
                   isChecked
                   onChange={() => toggle(id, false)}>
-                  <code>{id}</code>
+                  <DirectiveId id={id} />
                 </Checkbox>
               ))}
             </Box>

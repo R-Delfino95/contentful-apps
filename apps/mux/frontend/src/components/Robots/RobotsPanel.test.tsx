@@ -11,6 +11,7 @@ import {
   ROBOTS_POLL_INTERVAL_MS,
   ROBOTS_UNCONFIRMED_RECHECK_TICKS,
   cachedRobotsCapability,
+  recordRobotsCapability,
   resetRobotsCapabilityCache,
 } from '../../util/robots';
 import { MuxContentfulObject } from '../../util/types';
@@ -1776,8 +1777,13 @@ describe('RobotsPanel — what the run form knows about the asset', () => {
     vi.clearAllMocks();
   });
 
+  const workflowOption = async (workflow: string) =>
+    (await screen.findByLabelText('Workflow')).querySelector(
+      `option[value="${workflow}"]`
+    ) as HTMLOptionElement;
+
   it('tells the run form the video is audio-only, so the docs restrictions can apply', async () => {
-    // The gate lives in `validateParams`, but it is inert unless the panel passes what it knows.
+    // The picker applies them, but only if the panel passes on what it knows.
     renderPanel({
       muxApi: apiThatReturns([]),
       value: value({ audioOnly: true } as Partial<MuxContentfulObject>),
@@ -1785,11 +1791,9 @@ describe('RobotsPanel — what the run form knows about the asset', () => {
 
     await waitFor(() => expect(screen.getByText('Run a workflow')).toBeInTheDocument());
     await userEvent.click(screen.getByRole('button', { name: 'Run a workflow' }));
-    await userEvent.selectOptions(await screen.findByLabelText('Workflow'), 'find-scenes');
 
-    expect(
-      await screen.findByText('Find scenes does not support audio-only videos.')
-    ).toBeInTheDocument();
+    expect(await workflowOption('find-scenes')).toBeDisabled();
+    expect(await workflowOption('find-best-thumbnails')).toBeDisabled();
   });
 
   it('does not invent a restriction for a video whose kind is not recorded', async () => {
@@ -1797,9 +1801,40 @@ describe('RobotsPanel — what the run form knows about the asset', () => {
 
     await waitFor(() => expect(screen.getByText('Run a workflow')).toBeInTheDocument());
     await userEvent.click(screen.getByRole('button', { name: 'Run a workflow' }));
-    await userEvent.selectOptions(await screen.findByLabelText('Workflow'), 'find-scenes');
 
-    expect(screen.queryByText(/does not support audio-only videos/)).not.toBeInTheDocument();
+    expect(await workflowOption('find-scenes')).toBeEnabled();
+    await userEvent.selectOptions(await screen.findByLabelText('Workflow'), 'find-scenes');
+    expect((screen.getByLabelText('Workflow') as HTMLSelectElement).value).toBe('find-scenes');
+  });
+
+  it('tells the run form how long the video is, so a scope past its end is refused', async () => {
+    renderPanel({
+      muxApi: apiThatReturns([]),
+      value: value({ duration: 60 } as Partial<MuxContentfulObject>),
+    });
+
+    await waitFor(() => expect(screen.getByText('Run a workflow')).toBeInTheDocument());
+    await userEvent.click(screen.getByRole('button', { name: 'Run a workflow' }));
+    fireEvent.change(await screen.findByLabelText('Start time (seconds)'), {
+      target: { value: '90' },
+    });
+
+    expect(await screen.findByText(/past the end of the video/)).toBeInTheDocument();
+  });
+
+  it('does not give a live stream a length, since it is still growing', async () => {
+    renderPanel({
+      muxApi: apiThatReturns([]),
+      value: value({ duration: 60, is_live: true } as Partial<MuxContentfulObject>),
+    });
+
+    await waitFor(() => expect(screen.getByText('Run a workflow')).toBeInTheDocument());
+    await userEvent.click(screen.getByRole('button', { name: 'Run a workflow' }));
+    fireEvent.change(await screen.findByLabelText('Start time (seconds)'), {
+      target: { value: '90' },
+    });
+
+    expect(screen.queryByText(/past the end of the video/)).not.toBeInTheDocument();
   });
 });
 
@@ -2440,6 +2475,301 @@ describe('RobotsPanel — what the first open costs', () => {
     await waitFor(() =>
       expect(muxApi.listRobotsDirectiveRuns).toHaveBeenCalledWith('drv_removed', { limit: 25 })
     );
+  });
+});
+
+/**
+ * Rendering what is ready, and saying what is not.
+ *
+ * Measured before this pass, the tab painted nothing — not the Run button, not the headings —
+ * until the job list *and* an asset resync had both come back, because the resync the list
+ * triggers was awaited inside the list read: two serialized app-action round trips, three for a
+ * signed or DRM asset. Every Mux read is a round trip through `muxProxy`, so the list itself is
+ * the floor; what these pin is that nothing else is in front of it.
+ */
+describe('RobotsPanel — what the tab shows before everything is read', () => {
+  beforeEach(() => {
+    resetRobotsCapabilityCache();
+    vi.clearAllMocks();
+  });
+
+  const completed = (id: string, created_at = 1_700_000_000) => ({
+    id,
+    workflow: 'summarize',
+    status: 'completed',
+    created_at,
+  });
+
+  it('shows the jobs without waiting for the asset resync they trigger', async () => {
+    const resync = vi.fn(() => new Promise<void>(() => undefined));
+    renderPanel({ muxApi: apiThatReturns([completed('rjob_1')]), resync });
+
+    await waitFor(() => expect(screen.getByTestId('robots_job_table')).toBeInTheDocument());
+    expect(resync).toHaveBeenCalled();
+  });
+
+  it('does not read a failed resync as an answer about Robots', async () => {
+    // The resync is an asset GET. Awaited inside the list read, a 401 from it reached the
+    // capability classifier and replaced a working tab with the scope explainer.
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const resync = vi.fn(async () => {
+      throw new MuxApiError('Unauthorized', 401);
+    });
+    renderPanel({ muxApi: apiThatReturns([completed('rjob_1')]), resync });
+
+    await waitFor(() => expect(screen.getByTestId('robots_job_table')).toBeInTheDocument());
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(screen.queryByTestId('robots-scope-missing')).not.toBeInTheDocument();
+    expect(cachedRobotsCapability()).toEqual({ state: 'enabled' });
+    consoleError.mockRestore();
+  });
+
+  it('draws the tab at once when the session already knows Robots is on', async () => {
+    recordRobotsCapability({ state: 'enabled' });
+    const muxApi = {
+      ...apiThatReturns([]),
+      listRobotsJobs: vi.fn(() => new Promise(() => undefined)),
+    };
+    renderPanel({ muxApi });
+
+    // Before the list answers: the controls and headings, and loading rows where the jobs go.
+    expect(screen.getByRole('button', { name: 'Run a workflow' })).toBeEnabled();
+    expect(screen.getByText('Directives')).toBeInTheDocument();
+    expect(screen.getByTestId('robots_job_table_loading')).toBeInTheDocument();
+    expect(screen.queryByText(/No Robots jobs have run/)).not.toBeInTheDocument();
+  });
+
+  it('shows only a placeholder while it does not know whether Robots is on', () => {
+    // Most installs never enable Robots; their tab is about to become a note, not a table.
+    const muxApi = {
+      ...apiThatReturns([]),
+      listRobotsJobs: vi.fn(() => new Promise(() => undefined)),
+    };
+    renderPanel({ muxApi });
+
+    expect(screen.queryByRole('button', { name: 'Run a workflow' })).not.toBeInTheDocument();
+    expect(screen.queryByTestId('robots_job_table_loading')).not.toBeInTheDocument();
+  });
+
+  it('keeps an unopened tab inert, even when the session knows Robots is on', () => {
+    recordRobotsCapability({ state: 'enabled' });
+    const muxApi = apiThatReturns([]);
+    renderPanel({ muxApi, isActive: false });
+
+    expect(screen.queryByRole('button', { name: 'Run a workflow' })).not.toBeInTheDocument();
+    expect(muxApi.listRobotsJobs).not.toHaveBeenCalled();
+    expect(muxApi.listRobotsDirectives).not.toHaveBeenCalled();
+  });
+
+  it('says a Units cell is loading while the background read is on its way to it', async () => {
+    const reads: Array<(value: unknown) => void> = [];
+    const muxApi = {
+      ...apiThatReturns([completed('rjob_1')]),
+      getRobotsJob: vi.fn(() => new Promise((resolve) => reads.push(resolve))),
+    };
+    renderPanel({ muxApi });
+
+    const cell = await screen.findByTestId('robots-load-units-rjob_1');
+    // Not "Not loaded", which offers a read that is already happening.
+    expect(cell).toHaveTextContent('Loading…');
+    expect(cell).toBeDisabled();
+
+    await act(async () => {
+      reads[0]({ data: { ...completed('rjob_1'), units_consumed: 12 } });
+    });
+    expect(await screen.findByTestId('robots-units-rjob_1')).toHaveTextContent('12');
+  });
+
+  it('still offers the read for a row the background pass will never reach', async () => {
+    // The newest twenty are read in the background; the twenty-first is only read on a click.
+    const jobs = Array.from({ length: 21 }, (_, index) =>
+      completed(`rjob_${index}`, 1_700_000_000 - index)
+    );
+    const muxApi = {
+      ...apiThatReturns(jobs),
+      getRobotsJob: vi.fn(() => new Promise(() => undefined)),
+    };
+    renderPanel({ muxApi });
+
+    const outside = await screen.findByTestId('robots-load-units-rjob_20');
+    expect(outside).toHaveTextContent('Not loaded');
+    expect(outside).toBeEnabled();
+    expect(screen.getByTestId('robots-load-units-rjob_0')).toHaveTextContent('Loading…');
+  });
+
+  it('holds "Started elsewhere" back until the row’s detail has been read', async () => {
+    const reads: Array<(value: unknown) => void> = [];
+    const muxApi = {
+      ...apiThatReturns([completed('rjob_theirs')]),
+      getRobotsJob: vi.fn(() => new Promise((resolve) => reads.push(resolve))),
+    };
+    renderPanel({ muxApi });
+
+    await screen.findByTestId('robots_job_table');
+    // The detail could still carry this entry's passthrough, so saying it now could be a claim
+    // taken back a second later.
+    expect(screen.queryByText('Started elsewhere')).not.toBeInTheDocument();
+
+    await act(async () => {
+      reads[0]({ data: completed('rjob_theirs') });
+    });
+    expect(await screen.findByText('Started elsewhere')).toBeInTheDocument();
+  });
+
+  it('does not say "no directive runs" until it has read them', async () => {
+    let release: (value: unknown) => void = () => undefined;
+    const muxApi = {
+      ...apiThatReturns([]),
+      listRobotsDirectiveRuns: vi.fn(() => new Promise((resolve) => (release = resolve))),
+    };
+    renderPanel({ muxApi, defaultDirectiveIds: ['drv_configured'] });
+
+    await screen.findByText(/No Robots jobs have run/);
+    expect(screen.getByTestId('robots_directive_run_table_loading')).toBeInTheDocument();
+    expect(screen.queryByText(/No directive runs for this video yet/)).not.toBeInTheDocument();
+
+    await act(async () => {
+      release({ data: [] });
+    });
+    expect(await screen.findByText(/No directive runs for this video yet/)).toBeInTheDocument();
+  });
+
+  it('says there are no directive runs straight away when there is nothing to read', async () => {
+    renderPanel({ muxApi: apiThatReturns([]) });
+    expect(await screen.findByText(/No directive runs for this video yet/)).toBeInTheDocument();
+  });
+
+  it('lists directives alongside the jobs once Robots is known to be on', async () => {
+    recordRobotsCapability({ state: 'enabled' });
+    const muxApi = {
+      ...apiThatReturns([]),
+      listRobotsJobs: vi.fn(() => new Promise(() => undefined)),
+    };
+    renderPanel({ muxApi });
+
+    await waitFor(() => expect(muxApi.listRobotsDirectives).toHaveBeenCalled());
+  });
+
+  it('does not claim the video has no jobs when the list could not be read', async () => {
+    const muxApi = {
+      ...apiThatReturns([]),
+      listRobotsJobs: vi.fn(async () => {
+        throw new MuxApiError('Mux is down', 500);
+      }),
+    };
+    renderPanel({ muxApi });
+
+    expect(await screen.findByText('Mux is down')).toBeInTheDocument();
+    expect(screen.queryByText(/No Robots jobs have run/)).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * The directive picker, and where its choices come from. The configured ids are a snapshot of the
+ * installation parameters taken when this iframe loaded; the listing is Mux, now, through the
+ * saved credentials. See ADR-0009's 2026-09-24 amendment.
+ */
+describe('RobotsPanel — the directive picker', () => {
+  beforeEach(() => {
+    resetRobotsCapabilityCache();
+    vi.clearAllMocks();
+  });
+
+  const picker = () => screen.getByLabelText('Directive') as HTMLSelectElement;
+  const optionValues = () =>
+    Array.from(picker().querySelectorAll('option')).map((option) => option.value);
+
+  it('offers what Mux lists, not the configured ids, once the listing is in', async () => {
+    // The reported case: A was configured and deleted, B created. The iframe's parameters still
+    // say A; Mux says B.
+    const muxApi = {
+      ...apiThatReturns([]),
+      listRobotsDirectives: vi.fn(async () => ({ data: [{ id: 'drv_B', name: 'B' }] })),
+    };
+    renderPanel({ muxApi, defaultDirectiveIds: ['drv_A'] });
+
+    await waitFor(() => expect(optionValues()).toEqual(['', 'drv_B']));
+  });
+
+  it('offers nothing while the listing is on its way, rather than the snapshot', async () => {
+    const muxApi = {
+      ...apiThatReturns([]),
+      listRobotsDirectives: vi.fn(() => new Promise(() => undefined)),
+    };
+    renderPanel({ muxApi, defaultDirectiveIds: ['drv_A'] });
+
+    await screen.findByText('Directives');
+    expect(optionValues()).toEqual(['']);
+    expect(picker()).toBeDisabled();
+    expect(picker()).toHaveTextContent('Loading directives…');
+  });
+
+  it('falls back to the configured ids only when the listing fails', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const muxApi = {
+      ...apiThatReturns([]),
+      listRobotsDirectives: vi.fn(async () => {
+        throw new MuxApiError('Down', 500);
+      }),
+    };
+    renderPanel({ muxApi, defaultDirectiveIds: ['drv_A'] });
+
+    await waitFor(() => expect(optionValues()).toEqual(['', 'drv_A']));
+    consoleError.mockRestore();
+  });
+
+  it('takes an empty listing at its word', async () => {
+    const muxApi = {
+      ...apiThatReturns([]),
+      listRobotsDirectives: vi.fn(async () => ({ data: [] })),
+    };
+    renderPanel({ muxApi, defaultDirectiveIds: ['drv_A'] });
+
+    await waitFor(() => expect(picker()).toHaveTextContent('No directives in this Mux account'));
+    expect(optionValues()).toEqual(['']);
+  });
+
+  it('re-lists directives on Refresh, and drops a choice Mux no longer has', async () => {
+    let listed = [
+      { id: 'drv_A', name: 'A' },
+      { id: 'drv_B', name: 'B' },
+    ];
+    const muxApi = {
+      ...apiThatReturns([]),
+      listRobotsDirectives: vi.fn(async () => ({ data: listed })),
+    };
+    renderPanel({ muxApi });
+
+    await waitFor(() => expect(optionValues()).toEqual(['', 'drv_A', 'drv_B']));
+    await userEvent.selectOptions(picker(), 'drv_A');
+    expect(screen.getByRole('button', { name: 'Run directive' })).toBeEnabled();
+
+    listed = [{ id: 'drv_B', name: 'B' }];
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+
+    await waitFor(() => expect(optionValues()).toEqual(['', 'drv_B']));
+    expect(picker().value).toBe('');
+    expect(screen.getByRole('button', { name: 'Run directive' })).toBeDisabled();
+  });
+
+  it('keeps the listing it had when a re-list fails', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    let fail = false;
+    const muxApi = {
+      ...apiThatReturns([]),
+      listRobotsDirectives: vi.fn(async () => {
+        if (fail) throw new MuxApiError('Down', 500);
+        return { data: [{ id: 'drv_B', name: 'B' }] };
+      }),
+    };
+    renderPanel({ muxApi, defaultDirectiveIds: ['drv_A'] });
+
+    await waitFor(() => expect(optionValues()).toEqual(['', 'drv_B']));
+    fail = true;
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+    await waitFor(() => expect(muxApi.listRobotsDirectives).toHaveBeenCalledTimes(2));
+    expect(optionValues()).toEqual(['', 'drv_B']);
+    consoleError.mockRestore();
   });
 });
 

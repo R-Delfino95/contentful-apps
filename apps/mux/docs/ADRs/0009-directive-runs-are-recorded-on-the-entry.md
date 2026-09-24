@@ -308,3 +308,74 @@ the next time someone opens their Robots tab.
 **Neutral.** The job's `directive` reference is documented, and it is newer than the rest of the
 job shape this app relies on. If it were ever absent, a named run would simply not be found, and
 everything else would behave as it did before this amendment.
+
+## Amendment, 2026-09-24: configured ids that no longer resolve
+
+Two reports, one fault. Replacing the Mux token in the app's settings left the directives chosen
+under the old one configured, where they may not exist. And with directive A configured, A deleted
+in Mux and B created in its place: B was selected and saved, and the entry editor went on offering
+A — in the Robots tab's picker and in the upload modal's Automation section — until a full page
+reload.
+
+Both are a configured id that no longer resolves against the current credentials. Two causes were
+suspected; the code had some of each.
+
+**Deselecting A was possible, and nothing said it was needed.** A saved id the listing did not
+return was not invisible: it rendered under "Selected by ID", checked, and unticking it removed it.
+But it rendered exactly like an id typed in by hand, so a deleted directive survived every save
+looking legitimate. The listing was also not tied to the token it was read with: replace the token
+and the previous account's directives stayed on screen as choices; and a listing refused on page
+two was used as if it were complete.
+
+**The stale answer in the entry editor is the installation-parameter snapshot, made worse by our
+own code.** `sdk.parameters.installation` is handed to the iframe once, when it loads — this
+repository's link-checker app ran into the same thing and reloads on it (commit `c7a41f4f5`).
+Nothing here re-reads it, and no module-level cache holds directive ids: the capability cache and
+the API client's action ids are the only ones, and each iframe starts both from nothing. So what
+the reviewer's editor showed came from the parameters it was handed when it loaded; a full reload
+fixing it fits both an editor that predated the save and a web app handing a newly opened one an
+older copy, and which of the two it was is not observable from here. What this app added on top: the
+picker offered that snapshot while the listing was in flight, fell back to it when the listing
+came back *empty*, and never listed again — Refresh did not touch it. The upload modal attached
+every id in the snapshot, whether Mux had it or not.
+
+### What changed
+
+**One rule, applied where each id is used: the configured ids are a hint, and a complete listing
+from Mux is the answer.**
+
+- *The config screen* keeps a listing together with the credentials it was read with, and shows
+  it only while those are the ones in the form. A selected id that a complete listing does not
+  return is marked as not in this Mux account, with a Remove button. A replaced token is flagged
+  until the directives are listed again, not cleared: a new token for the same environment keeps
+  every id valid, and clearing would drop the automation of an admin who was only rotating it.
+- *The Robots tab's picker* offers what the listing returns, falls back to the configured ids only
+  when the listing fails, says so when the account has none, and Refresh lists again. A choice the
+  newest listing no longer offers is dropped rather than run into a 404.
+- *The upload modal* does not attach a configured id that a complete listing — fewer than one full
+  page — does not return, and says why. A listing that fails, or fills a page, is not evidence of
+  absence, and attaches everything as before.
+
+**Reading the installation fresh was considered and not done.** A CMA read of the app installation
+at mount would close the snapshot gap, and it would cost a request on every open of every entry
+with a video, for every install — including the ones that never enable Robots (ADR-0006). This
+repository's content-insights app removed exactly that read for CMA rate-limit pressure (commit
+`c114828d8`); link-checker still makes it, only when its page is returned to, and found the SDK's
+client there offers only the org-wide `getForOrganization` (commit `c7a41f4f5`). What is left
+open: a directive *added* to the configuration after an editor's page loaded is not attached to
+that editor's uploads, nor polled as a configured directive, until the page reloads — the picker
+does list it, because the picker lists what Mux has. The upload modal says a reload picks up a
+changed configuration when it finds a configured id Mux does not have.
+
+### Consequences of this amendment
+
+**Positive.** A configured directive Mux does not have can no longer ride on an upload or be picked
+for a run, and the config screen shows it for what it is at the moment an admin can remove it. A
+listing is never read against a token it did not come from.
+
+**Negative.** The picker is empty for the length of the listing round trip rather than showing the
+configured ids straight away. And the snapshot gap is narrowed, not closed: an editor whose page
+predates a configuration change still gets the old defaults, minus any Mux no longer has.
+
+**Neutral.** Nothing is removed from the configuration automatically. Every removal is an admin's
+click on a listing made with the token in the form, and nothing is saved until they save.

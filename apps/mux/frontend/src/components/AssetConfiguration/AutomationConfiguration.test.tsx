@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import '@testing-library/jest-dom';
 import AutomationConfiguration from './AutomationConfiguration';
+import MuxAssetConfigurationModal from './MuxAssetConfigurationModal';
 import {
   directiveNamesById,
   useRobotsDirectiveNames,
@@ -121,5 +122,126 @@ describe('useRobotsDirectiveNames', () => {
     render(<Probe muxApi={{ listRobotsDirectives } as never} ids={['drv_1']} isEnabled={false} />);
 
     expect(listRobotsDirectives).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * The configured ids come from installation parameters, which the web app hands this iframe once,
+ * when it loads. A directive deleted in Mux since then — or one from a token that has since been
+ * replaced — is still in that snapshot. The listing the names come from is Mux now, through the
+ * saved credentials, and says which ones it does not have.
+ */
+describe('directives Mux does not have', () => {
+  const Probe = ({ muxApi, ids }: { muxApi?: MuxApiService; ids: string[] }) => {
+    const { missingIds } = useRobotsDirectiveNames(muxApi, ids, true);
+    return <span data-testid="missing">{missingIds.join(',')}</span>;
+  };
+
+  it('names the configured ids a complete listing does not return', async () => {
+    const listRobotsDirectives = vi.fn(async () => ({ data: [{ id: 'drv_live', name: 'Live' }] }));
+    render(<Probe muxApi={{ listRobotsDirectives } as never} ids={['drv_live', 'drv_gone']} />);
+
+    await waitFor(() => expect(screen.getByTestId('missing')).toHaveTextContent('drv_gone'));
+    expect(screen.getByTestId('missing')).not.toHaveTextContent('drv_live');
+  });
+
+  it('names none from a full page, which may not be every directive in the account', async () => {
+    const page = Array.from({ length: 100 }, (_, index) => ({ id: `drv_${index}` }));
+    const listRobotsDirectives = vi.fn(async () => ({ data: page }));
+    render(<Probe muxApi={{ listRobotsDirectives } as never} ids={['drv_gone']} />);
+
+    await waitFor(() => expect(listRobotsDirectives).toHaveBeenCalled());
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(screen.getByTestId('missing')).toHaveTextContent('');
+  });
+
+  it('names none when the listing fails, because that is not evidence of absence', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const listRobotsDirectives = vi.fn(async () => {
+      throw new Error('403');
+    });
+    render(<Probe muxApi={{ listRobotsDirectives } as never} ids={['drv_gone']} />);
+
+    await waitFor(() => expect(listRobotsDirectives).toHaveBeenCalled());
+    expect(screen.getByTestId('missing')).toHaveTextContent('');
+    consoleError.mockRestore();
+  });
+
+  it('shows a missing directive as unavailable rather than as a choice', () => {
+    render(
+      <AutomationConfiguration
+        availableDirectiveIds={['drv_live', 'drv_gone']}
+        selectedDirectiveIds={['drv_live', 'drv_gone']}
+        missingDirectiveIds={['drv_gone']}
+        directiveNames={{ drv_live: 'Live', drv_gone: 'drv_gone' }}
+        onChange={vi.fn()}
+      />
+    );
+
+    const gone = screen.getByRole('checkbox', { name: 'drv_gone' });
+    expect(gone).toBeDisabled();
+    expect(gone).not.toBeChecked();
+    expect(
+      screen.getByText(/Mux does not have this directive, so it will not run/)
+    ).toBeInTheDocument();
+    expect(screen.getByRole('checkbox', { name: 'Live' })).toBeChecked();
+  });
+
+  it('wraps a long id rather than letting it widen the modal', () => {
+    const long = `drv_${'x'.repeat(90)}`;
+    render(
+      <AutomationConfiguration
+        availableDirectiveIds={[long, 'drv_named']}
+        selectedDirectiveIds={[]}
+        directiveNames={{ [long]: long, drv_named: 'Named' }}
+        onChange={vi.fn()}
+      />
+    );
+    expect(screen.getByText(long)).toHaveStyle({ wordBreak: 'break-word' });
+    expect(screen.getByText('drv_named')).toHaveStyle({ wordBreak: 'break-word' });
+  });
+
+  describe('in the upload modal', () => {
+    const sdk = {
+      entry: { fields: {}, getSys: () => ({ id: 'entry-1' }) },
+      field: { id: 'muxVideo' },
+    } as never;
+
+    const upload = async (listRobotsDirectives: () => Promise<unknown>) => {
+      const onConfirm = vi.fn();
+      render(
+        <MuxAssetConfigurationModal
+          isShown
+          onClose={vi.fn()}
+          onConfirm={onConfirm}
+          installationParams={{
+            muxEnableSignedUrls: false,
+            muxDefaultDirectiveIds: ['drv_live', 'drv_gone'],
+          }}
+          sdk={sdk}
+          muxApi={{ listRobotsDirectives } as never}
+        />
+      );
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Upload' })).toBeEnabled());
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      fireEvent.click(screen.getByRole('button', { name: 'Upload' }));
+      return onConfirm.mock.calls[0]?.[0]?.directiveIds;
+    };
+
+    it('does not attach a directive Mux says it does not have', async () => {
+      expect(await upload(async () => ({ data: [{ id: 'drv_live', name: 'Live' }] }))).toEqual([
+        'drv_live',
+      ]);
+    });
+
+    it('attaches everything configured when the listing cannot say', async () => {
+      const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      expect(
+        await upload(async () => {
+          throw new Error('403');
+        })
+      ).toEqual(['drv_live', 'drv_gone']);
+      consoleError.mockRestore();
+    });
   });
 });

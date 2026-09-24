@@ -211,3 +211,69 @@ rejected", and now gets an explainer whose remedy — a new token — fixes the 
 invalidated on a credential change, which stays the deliberate trade it was. The units copy says
 the account "does not have enough left" for the run rather than that it has none, because that
 is the most a refusal can tell us.
+
+## Amendment, 2026-09-24: what the first paint waits for
+
+Review asked whether the tab could show the job table first and fill the rest in behind it. The
+2026-09-21 amendment above had already taken the capability probe and the directive fan-out off
+the first open, so what still stood in front of the table was measured before anything changed —
+every Mux call simulated as one app-action round trip, which in production is a POST plus a poll of
+Contentful's call log at a two-second interval.
+
+**Before.** Nothing — not the Run button, not the headings — rendered until two round trips had
+finished in series: the job list, then an asset resync the list sets off for completed jobs, which
+the list read *awaited*. Three for a signed or DRM asset, whose resync also fetches playback tokens.
+The directive picker filled in a round trip after that. And most first opens of an asset with
+history read the job list twice: the first-load effect re-fired while the awaited resync still held
+`hasLoadedOnce` false, and the second request queued behind the first.
+
+**After.** The table paints when the job list answers: one round trip, which is the floor, because
+every Mux read from the field location goes through `muxProxy`. A direct browser call to
+`api.mux.com` would be quicker and is ruled out: `AGENTS.md` reserves it for the config screen,
+which has to work before the app is installed and checks credentials as typed, and sends
+everything else through app actions. Around that one read:
+
+- Once the session knows Robots is on, an opened tab draws its own structure at once — the buttons,
+  the Directives heading and picker — with loading rows where the jobs will go. An unopened tab,
+  and one whose account is not yet known, still draws only a placeholder: for most installs the
+  answer is that Robots is off, and the tab is about to become a note.
+- The directive listing runs alongside the job list when Robots is known to be on, or when
+  directives are configured — which an install without Robots never has, so it still costs one
+  failed request per session.
+- What is still being read says so, and only that: Units reads *Loading…* on a row the background
+  detail pass will reach, where it used to read ADR-0005's *Not loaded* — which now means only what
+  it says, a row past the window; the runs table and the picker show loading until their first
+  read; and "Started elsewhere" is held back until a row's detail and the first runs pass are in,
+  so it is said a moment late rather than taken back.
+- The resync runs beside the list, not inside it. Awaited, its failure also landed in the list
+  read's error path, where an asset GET refused with a 401 would have been classified as the
+  account losing Robots and cached for the session. "Only the job list read decides capability"
+  was not quite true until this change.
+
+| Round trips until… | Run button | Job table | Picker names | Every Units cell |
+|---|---|---|---|---|
+| First entry of a session, 8 completed jobs, 1 directive — before | 2 | 2 | 3 | 3 |
+| — after | 1 | 1 | 1 | 3 |
+| Same, Robots already known this session — before | 2 | 2 | 3 | 3 |
+| — after | 0 | 1 | 1 | 3 |
+| Signed or DRM playback — before | 3 | 3 | 4 | 3 |
+| — after | 1 | 1 | 1 | 3 |
+
+Serialized round trips, not seconds. The Units column is unchanged on purpose: its reads are
+bounded to five per pass over the newest twenty jobs (ADR-0005), and widening that trades request
+volume — two CMA requests and a function per read — for a column that already says it is loading.
+
+### Consequences of this amendment
+
+**Positive.** The table, the Run button and the picker arrive together at the first round trip, and
+every empty state waits until it is true. A resync that fails can no longer turn a working tab into
+a capability note.
+
+**Negative.** An unknown account still shows a placeholder for that first round trip rather than
+the tab's structure — the price of not flashing Robots furniture at every install that never
+enabled it. And with directives configured, the listing now goes out before the job list has said
+whether Robots is on: on an account that has lost Robots since it was configured, that is a second
+failed request in the session.
+
+**Neutral.** The number of requests a first open makes is one lower (the duplicate job list is
+gone), and none of the reads is new.
