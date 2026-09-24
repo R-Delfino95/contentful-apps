@@ -166,8 +166,8 @@ const RobotsConfiguration: FC<RobotsConfigurationProps> = ({
     <>
       <Paragraph>
         A directive runs several Robots workflows in order. Pick the ones that should run
-        automatically on every video uploaded through this app — editors can still deselect them
-        per upload, and run any directive ad hoc from the Robots tab.{' '}
+        automatically on every video uploaded through this app — editors can still deselect them per
+        upload, and run any directive ad hoc from the Robots tab.{' '}
         <ExternalLink href={`${ROBOTS_DOCS_URL}-directives`}>Author directives in Mux</ExternalLink>
       </Paragraph>
 

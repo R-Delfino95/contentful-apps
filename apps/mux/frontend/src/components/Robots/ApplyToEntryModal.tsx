@@ -82,10 +82,7 @@ const ApplyToEntryModal: FC<ApplyToEntryModalProps> = ({ isShown, onClose, sdk, 
     if (!isShown) return;
     setTargets(
       Object.fromEntries(
-        candidates.map((candidate) => [
-          candidate.key,
-          defaultTargetFieldId(sdk, candidate, locale),
-        ])
+        candidates.map((candidate) => [candidate.key, defaultTargetFieldId(sdk, candidate, locale)])
       )
     );
   }, [isShown, candidates, sdk, locale]);

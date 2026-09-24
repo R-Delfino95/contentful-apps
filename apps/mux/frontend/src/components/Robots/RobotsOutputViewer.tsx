@@ -52,8 +52,8 @@ const shapedOrRaw = (hasContent: boolean, shaped: ReactElement, outputs: unknown
   ) : (
     <>
       <Note variant="warning">
-        This job completed, but its output is not in the shape this view knows how to draw. The
-        raw result follows.
+        This job completed, but its output is not in the shape this view knows how to draw. The raw
+        result follows.
       </Note>
       <RobotsJsonBlock value={outputs} what="this output" testId="robots-output-json" />
     </>
@@ -89,8 +89,7 @@ const OutputBody: FC<{ job: RobotsJob }> = ({ job }) => {
     return (
       <>
         <Note variant="neutral">
-          This app has no shaped view for {String(job.workflow)} yet. Here is what the job
-          returned.
+          This app has no shaped view for {String(job.workflow)} yet. Here is what the job returned.
         </Note>
         <RobotsJsonBlock value={outputs} what="this output" testId="robots-output-json" />
       </>

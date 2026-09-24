@@ -141,7 +141,10 @@ const RobotsRunModal: FC<RobotsRunModalProps> = ({
     <FieldModal isShown={isShown} onClose={onClose} size="large">
       {() => (
         <>
-          <Modal.Header title={confirming ? 'Confirm this run' : 'Run a Robots workflow'} onClose={onClose} />
+          <Modal.Header
+            title={confirming ? 'Confirm this run' : 'Run a Robots workflow'}
+            onClose={onClose}
+          />
           <Modal.Content>
             {confirming ? (
               <>
@@ -154,10 +157,7 @@ const RobotsRunModal: FC<RobotsRunModalProps> = ({
                 </Paragraph>
                 <Paragraph>
                   Robots is billed per AI unit. The first 100,000 units each month are free —{' '}
-                  <ExternalLink href={ROBOTS_PRICING_URL}>
-                    see pricing
-                  </ExternalLink>
-                  .
+                  <ExternalLink href={ROBOTS_PRICING_URL}>see pricing</ExternalLink>.
                 </Paragraph>
                 {definition.producesTrack && (
                   <Note variant="neutral">
@@ -176,7 +176,10 @@ const RobotsRunModal: FC<RobotsRunModalProps> = ({
                     damage are read together. */}
                 {warnings.map((warning) => (
                   <Box key={warning.title} marginTop="spacingS">
-                    <Note variant="negative" title={warning.title} data-testid="robots-confirm-warning">
+                    <Note
+                      variant="negative"
+                      title={warning.title}
+                      data-testid="robots-confirm-warning">
                       {warning.body}
                     </Note>
                   </Box>

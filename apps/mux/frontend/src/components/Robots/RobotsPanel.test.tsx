@@ -408,7 +408,9 @@ describe('RobotsPanel unconfirmed creates', () => {
     };
 
     renderPanel({ muxApi });
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Run a workflow' })).toBeEnabled());
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Run a workflow' })).toBeEnabled()
+    );
 
     fireEvent.click(screen.getByRole('button', { name: 'Run a workflow' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Continue' }));
@@ -739,7 +741,9 @@ describe('RobotsPanel — the fields the list leaves out', () => {
       updateField,
     });
 
-    await waitFor(() => expect(read()?.robotsJobs?.[0].error).toBe('The audio track was too quiet'));
+    await waitFor(() =>
+      expect(read()?.robotsJobs?.[0].error).toBe('The audio track was too quiet')
+    );
     expect(read()?.robotsJobs?.[0].units_consumed).toBe(2);
   });
 
@@ -770,14 +774,16 @@ describe('RobotsPanel — the fields the list leaves out', () => {
     const { updateField, read } = withStored(value());
     renderPanel({ muxApi, updateField });
 
-    await waitFor(() => expect(muxApi.getRobotsJob).toHaveBeenCalledWith('summarize', 'rjob_theirs'));
+    await waitFor(() =>
+      expect(muxApi.getRobotsJob).toHaveBeenCalledWith('summarize', 'rjob_theirs')
+    );
     expect(await screen.findByText('7')).toBeInTheDocument();
 
     // But it still never reaches the entry.
     expect(read()?.robotsJobs).toBeUndefined();
   });
 
-  it('does not adopt another install\'s job just because it fetched its passthrough', async () => {
+  it("does not adopt another install's job just because it fetched its passthrough", async () => {
     // `contentful@` identifies the app, not the install. Now that detail is fetched for jobs we
     // do not own, a second Contentful install pointed at the same Mux account would otherwise
     // have its jobs copied onto this entry. Both shapes are refused: the pre-scope format, which
@@ -991,9 +997,7 @@ describe('RobotsPanel — Units past the detail window', () => {
     await settled(muxApi);
     fireEvent.click(screen.getByTestId('robots-load-units-rjob_old'));
 
-    await waitFor(() =>
-      expect(screen.getByTestId('robots-units-rjob_old')).toHaveTextContent('9')
-    );
+    await waitFor(() => expect(screen.getByTestId('robots-units-rjob_old')).toHaveTextContent('9'));
     // Exactly one more request than the bounded pass made: volume tracks interest, not history.
     expect(muxApi.getRobotsJob).toHaveBeenCalledTimes(21);
     expect(muxApi.getRobotsJob).toHaveBeenCalledWith('summarize', 'rjob_old');
@@ -1008,9 +1012,7 @@ describe('RobotsPanel — Units past the detail window', () => {
     await settled(muxApi);
     fireEvent.click(screen.getByRole('button', { name: 'View output' }));
 
-    await waitFor(() =>
-      expect(screen.getByTestId('robots-units-rjob_old')).toHaveTextContent('9')
-    );
+    await waitFor(() => expect(screen.getByTestId('robots-units-rjob_old')).toHaveTextContent('9'));
     expect(screen.queryByTestId('robots-load-units-rjob_old')).not.toBeInTheDocument();
     // One read, not one per open: the row is filled by the fetch the modal was making anyway.
     expect(muxApi.getRobotsJob).toHaveBeenCalledTimes(21);
@@ -1044,9 +1046,7 @@ describe('RobotsPanel — directive runs', () => {
     renderPanel({
       muxApi: {
         listRobotsJobs: vi.fn(async () => ({
-          data: [
-            { id: 'rjob_auto', workflow: 'summarize', status: 'completed', created_at: 1 },
-          ],
+          data: [{ id: 'rjob_auto', workflow: 'summarize', status: 'completed', created_at: 1 }],
         })),
         getRobotsJob: vi.fn(async () => ({
           data: { id: 'rjob_auto', workflow: 'summarize', status: 'completed' },
@@ -1088,7 +1088,9 @@ describe('RobotsPanel — directive runs', () => {
       defaultDirectiveIds: ['drv_1'],
     });
 
-    await waitFor(() => expect(screen.getByTestId('robots_directive_run_table')).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getByTestId('robots_directive_run_table')).toBeInTheDocument()
+    );
     expect(getRobotsDirectiveRun).not.toHaveBeenCalled();
   });
 });
@@ -1225,7 +1227,7 @@ describe('RobotsPanel — the shape the runs endpoint actually returns', () => {
  * that window, and the rest of the sequence then only appears on a page reload — which is exactly
  * the workaround this was reported with.
  */
-describe('RobotsPanel — polling between a directive\'s workflows', () => {
+describe("RobotsPanel — polling between a directive's workflows", () => {
   beforeEach(() => {
     resetRobotsCapabilityCache();
     vi.clearAllMocks();
@@ -1430,7 +1432,12 @@ describe('RobotsPanel — starting a directive run', () => {
     listRobotsDirectives: vi.fn(async () => ({ data: [{ id: 'drv_1', name: 'Ingest' }] })),
     listRobotsDirectiveRuns: vi.fn(async () => ({ data: [] })),
     createRobotsDirectiveRun: vi.fn(async () => ({
-      data: { run_id: 'drvrun_1', subject_id: 'asset-1', status: 'pending', started_at: nowSeconds },
+      data: {
+        run_id: 'drvrun_1',
+        subject_id: 'asset-1',
+        status: 'pending',
+        started_at: nowSeconds,
+      },
     })),
     ...overrides,
   });
@@ -1482,12 +1489,10 @@ describe('RobotsPanel — starting a directive run', () => {
     ];
     fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
 
-    await waitFor(() =>
-      expect(stored.read()?.robotsDirectiveRuns?.[0].jobIds).toEqual(['rjob_a'])
-    );
+    await waitFor(() => expect(stored.read()?.robotsDirectiveRuns?.[0].jobIds).toEqual(['rjob_a']));
   });
 
-  it('claims a job after its run has fallen out of the API\'s list window', async () => {
+  it("claims a job after its run has fallen out of the API's list window", async () => {
     // The structural point. `GET .../runs` is capped at 25 and cannot filter by asset, so a busy
     // or deleted directive makes this run invisible — and before the run was recorded, its jobs
     // then became permanently unclaimable.
@@ -1562,7 +1567,12 @@ describe('RobotsPanel — starting a directive run', () => {
         }),
         listRobotsDirectiveRuns: vi.fn(async () => ({
           data: [
-            { run_id: 'drvrun_started', subject_id: 'asset-1', status: 'pending', started_at: nowSeconds },
+            {
+              run_id: 'drvrun_started',
+              subject_id: 'asset-1',
+              status: 'pending',
+              started_at: nowSeconds,
+            },
           ],
         })),
       });
@@ -1609,7 +1619,12 @@ describe('RobotsPanel — starting a directive run', () => {
 
     await act(async () => {
       release({
-        data: { run_id: 'drvrun_1', subject_id: 'asset-1', status: 'pending', started_at: nowSeconds },
+        data: {
+          run_id: 'drvrun_1',
+          subject_id: 'asset-1',
+          status: 'pending',
+          started_at: nowSeconds,
+        },
       });
     });
     await waitFor(() =>
@@ -1627,7 +1642,9 @@ describe('RobotsPanel — starting a directive run', () => {
       }),
     });
 
-    await waitFor(() => expect(sdk.notifier.success).toHaveBeenCalledWith('Directive run started.'));
+    await waitFor(() =>
+      expect(sdk.notifier.success).toHaveBeenCalledWith('Directive run started.')
+    );
     expect(sdk.notifier.error).not.toHaveBeenCalled();
     consoleError.mockRestore();
   });
@@ -1888,19 +1905,37 @@ describe('RobotsPanel — opening a job the moment it finishes', () => {
       listRobotsDirectiveRuns: vi.fn(async () => ({ data: [] })),
     };
 
-    const full = { id: 'rjob_watched', workflow, status: 'completed', created_at: created, outputs };
+    const full = {
+      id: 'rjob_watched',
+      workflow,
+      status: 'completed',
+      created_at: created,
+      outputs,
+    };
     return { muxApi, detailReads, full, finish: () => (watchedStatus = 'completed') };
   };
 
   it.each([
     ['ask-questions', { answers: [{ question: 'Who?', answer: 'The narrator' }] }, 'The narrator'],
     ['summarize', { title: 'A title Mux wrote' }, 'A title Mux wrote'],
-    ['find-scenes', { scenes: [{ start_ms: 0, end_ms: 1000, title: 'Opening scene' }] }, 'Opening scene'],
+    [
+      'find-scenes',
+      { scenes: [{ start_ms: 0, end_ms: 1000, title: 'Opening scene' }] },
+      'Opening scene',
+    ],
     ['generate-chapters', { chapters: [{ start_time: 0, title: 'Chapter one' }] }, 'Chapter one'],
     ['find-key-moments', { moments: [{ start_ms: 0, end_ms: 1, title: 'A moment' }] }, 'A moment'],
-    ['find-best-thumbnails', { best_thumbnails: [{ timestamp_ms: 0, description: 'A frame' }] }, 'A frame'],
+    [
+      'find-best-thumbnails',
+      { best_thumbnails: [{ timestamp_ms: 0, description: 'A frame' }] },
+      'A frame',
+    ],
     ['moderate', { max_scores: { nudity: 0.1 } }, 'nudity'],
-    ['generate-engagement-insights', { overall_insight: { summary: 'Viewers dropped off' } }, 'Viewers dropped off'],
+    [
+      'generate-engagement-insights',
+      { overall_insight: { summary: 'Viewers dropped off' } },
+      'Viewers dropped off',
+    ],
     ['generate-premium-captions', { track_id: 'trk_1' }, 'trk_1'],
     ['edit-captions', { track_id: 'trk_2' }, 'trk_2'],
     ['translate-captions', { track_id: 'trk_3' }, 'trk_3'],
@@ -2148,7 +2183,9 @@ describe('RobotsPanel concurrency', () => {
     let status = 'processing';
     const muxApi = {
       listRobotsJobs: vi.fn(async () => ({ data: [{ ...job, status }] })),
-      getRobotsJob: vi.fn(async () => ({ data: { ...job, status, passthrough: ourPassthrough() } })),
+      getRobotsJob: vi.fn(async () => ({
+        data: { ...job, status, passthrough: ourPassthrough() },
+      })),
       listRobotsDirectives: vi.fn(async () => ({ data: [] })),
       listRobotsDirectiveRuns: vi.fn(async () => ({ data: [] })),
     };
@@ -2301,7 +2338,7 @@ describe('RobotsPanel — when the asset goes away', () => {
     expect(screen.queryByTestId('robots_job_table')).not.toBeInTheDocument();
   });
 
-  it('never writes one asset\'s jobs onto another asset\'s entry', async () => {
+  it("never writes one asset's jobs onto another asset's entry", async () => {
     // The reachable version of the leak: pasting a different Mux asset ID replaces the whole
     // value without unmounting this panel. The old asset's jobs carry a scope-matching
     // passthrough, so nothing downstream would have refused them.
@@ -2873,9 +2910,9 @@ describe('RobotsPanel — an unconfirmed create does not block every workflow fo
 
       /** A poll tick is a plain list read; the re-check pass narrows by workflow as well. */
       const pollTicks = () =>
-        (
-          muxApi.listRobotsJobs.mock.calls as unknown as Array<[{ workflow?: string }]>
-        ).filter(([query]) => query?.workflow === undefined).length;
+        (muxApi.listRobotsJobs.mock.calls as unknown as Array<[{ workflow?: string }]>).filter(
+          ([query]) => query?.workflow === undefined
+        ).length;
       const afterCreate = pollTicks();
 
       for (let tick = 0; tick < ROBOTS_UNCONFIRMED_RECHECK_TICKS + 5; tick += 1) {

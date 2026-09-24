@@ -606,9 +606,7 @@ const TaxonomyInput: FC<{
           id={`robots-param-${field.name}-allow-other`}
           isChecked={taxonomy.allowOther}
           helpText="Clear this to restrict the output to the values above and their aliases."
-          onChange={(event) =>
-            patch({ allowOther: (event.target as HTMLInputElement).checked })
-          }>
+          onChange={(event) => patch({ allowOther: (event.target as HTMLInputElement).checked })}>
           Allow values outside this list
         </Checkbox>
       </Box>

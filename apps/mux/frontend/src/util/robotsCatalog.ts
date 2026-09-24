@@ -430,7 +430,8 @@ export const ROBOTS_CATALOG: RobotsWorkflowDefinition[] = [
         kind: 'select',
         name: 'auto_censor_profanity.mode',
         label: 'How to censor',
-        helpText: 'Blank out writes bracketed underscores, remove drops the text, mask writes question marks.',
+        helpText:
+          'Blank out writes bracketed underscores, remove drops the text, mask writes question marks.',
         options: [
           { value: 'blank', label: 'Blank out' },
           { value: 'remove', label: 'Remove' },
@@ -444,7 +445,8 @@ export const ROBOTS_CATALOG: RobotsWorkflowDefinition[] = [
         kind: 'stringList',
         name: 'auto_censor_profanity.always_censor',
         label: 'Always censor',
-        helpText: 'Words or phrases censored whatever the model decides. One per line; spaces are fine.',
+        helpText:
+          'Words or phrases censored whatever the model decides. One per line; spaces are fine.',
         showWhen: { field: 'censor_profanity', equals: true },
       },
       {
@@ -824,7 +826,7 @@ export const ROBOTS_CATALOG: RobotsWorkflowDefinition[] = [
         kind: 'boolean',
         name: 'update_asset_thumbnail',
         label: "Set the asset's thumbnail to the winner",
-        helpText: "Writes `thumbnail_time` on the Mux asset. Caches may take a while to catch up.",
+        helpText: 'Writes `thumbnail_time` on the Mux asset. Caches may take a while to catch up.',
         defaultValue: false,
       },
       {
@@ -1050,7 +1052,8 @@ export const ROBOTS_CATALOG: RobotsWorkflowDefinition[] = [
         label: 'Seconds between samples',
         // Worth stating: this is the one parameter here that drives cost, since moderation is
         // billed per sampled frame rather than per minute.
-        helpText: 'At least 5. Defaults to one sample every 10 seconds. Denser sampling costs more.',
+        helpText:
+          'At least 5. Defaults to one sample every 10 seconds. Denser sampling costs more.',
         min: 5,
         step: 1,
       },
@@ -1447,11 +1450,7 @@ export function confirmWarnings(
  * Only limits the field declares are enforced. `find-scenes` and `find-key-moments` document none
  * for `topic_taxonomy`, and a cap invented for them would block a run Mux accepts.
  */
-function taxonomyErrors(
-  field: RobotsParamField,
-  formValue: unknown,
-  apiValue: unknown
-): string[] {
+function taxonomyErrors(field: RobotsParamField, formValue: unknown, apiValue: unknown): string[] {
   const errors: string[] = [];
   const taxonomy = asTaxonomyValue(formValue);
 
@@ -1470,7 +1469,10 @@ function taxonomyErrors(
   const limits = field.taxonomyLimits;
   if (!limits) return errors;
 
-  const sent = apiValue as { name?: string; values: Array<{ label: string; description?: string; aliases?: string[] }> };
+  const sent = apiValue as {
+    name?: string;
+    values: Array<{ label: string; description?: string; aliases?: string[] }>;
+  };
 
   if (limits.maxValues !== undefined && sent.values.length > limits.maxValues) {
     errors.push(`${field.label}: at most ${limits.maxValues} values.`);
@@ -1486,7 +1488,9 @@ function taxonomyErrors(
   for (const row of sent.values) {
     if (limits.maxLabelLength !== undefined && row.label.length > limits.maxLabelLength) {
       errors.push(
-        `${field.label}: a value is at most ${limits.maxLabelLength} characters — "${row.label.slice(0, 40)}…".`
+        `${field.label}: a value is at most ${
+          limits.maxLabelLength
+        } characters — "${row.label.slice(0, 40)}…".`
       );
       break;
     }
@@ -1516,7 +1520,9 @@ function taxonomyErrors(
         : (row.aliases ?? []).find((alias) => alias.length > maxAliasLength);
     if (longAlias !== undefined) {
       errors.push(
-        `${field.label}: an alias is at most ${limits.maxAliasLength} characters — "${longAlias.slice(0, 40)}…".`
+        `${field.label}: an alias is at most ${
+          limits.maxAliasLength
+        } characters — "${longAlias.slice(0, 40)}…".`
       );
       break;
     }

@@ -147,7 +147,9 @@ describe('RobotsRunModal form widgets', () => {
 
     it('does not warn about a run that only records scores', async () => {
       renderModal({ initialWorkflow: 'moderate' });
-      expect((screen.getByLabelText('If the video is flagged') as HTMLSelectElement).value).toBe('');
+      expect((screen.getByLabelText('If the video is flagged') as HTMLSelectElement).value).toBe(
+        ''
+      );
 
       await userEvent.click(screen.getByRole('button', { name: 'Continue' }));
       expect(await screen.findByText(/consume Mux AI units/)).toBeInTheDocument();
@@ -252,10 +254,7 @@ describe('RobotsRunModal form widgets', () => {
     const options = screen.getByLabelText('Answer options for question 1');
     expect(options).not.toBeDisabled();
 
-    await userEvent.selectOptions(
-      screen.getByLabelText('How question 1 is answered'),
-      'free_form'
-    );
+    await userEvent.selectOptions(screen.getByLabelText('How question 1 is answered'), 'free_form');
     expect(screen.getByLabelText('Answer options for question 1')).toBeDisabled();
   });
 
@@ -573,9 +572,7 @@ describe('RobotsRunModal taxonomy editor', () => {
     await userEvent.type(screen.getByLabelText('Taxonomy name'), 'Content pillars');
 
     expect(
-      await screen.findByText(
-        'Tag taxonomy: add at least one value, or clear the taxonomy name.'
-      )
+      await screen.findByText('Tag taxonomy: add at least one value, or clear the taxonomy name.')
     ).toBeInTheDocument();
   });
 });

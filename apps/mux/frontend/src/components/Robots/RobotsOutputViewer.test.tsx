@@ -46,9 +46,7 @@ describe('find-key-moments output', () => {
     );
 
     expect(screen.getByText('The Pivotal Realization')).toBeInTheDocument();
-    expect(
-      screen.getByText('The speaker gestures at a whiteboard diagram.')
-    ).toBeInTheDocument();
+    expect(screen.getByText('The speaker gestures at a whiteboard diagram.')).toBeInTheDocument();
   });
 
   it('shows both narratives at once, labelled, when the job filled both', () => {
@@ -174,15 +172,18 @@ const openRaw = () => userEvent.click(screen.getByRole('tab', { name: 'Raw JSON'
 const rawText = () => (screen.getByTestId('robots-raw-json') as HTMLTextAreaElement).value;
 
 describe('the raw JSON view', () => {
-  it.each(ROBOTS_WORKFLOWS)('is reachable on %s, whatever the shaped view does', async (workflow) => {
-    const value = job({ workflow, outputs: { anything: 'at all' } });
-    show(value);
+  it.each(ROBOTS_WORKFLOWS)(
+    'is reachable on %s, whatever the shaped view does',
+    async (workflow) => {
+      const value = job({ workflow, outputs: { anything: 'at all' } });
+      show(value);
 
-    expect(screen.getByRole('tab', { name: 'Result' })).toBeInTheDocument();
-    await openRaw();
+      expect(screen.getByRole('tab', { name: 'Result' })).toBeInTheDocument();
+      await openRaw();
 
-    expect(rawText()).toBe(JSON.stringify(value, null, 2));
-  });
+      expect(rawText()).toBe(JSON.stringify(value, null, 2));
+    }
+  );
 
   it('opens on the shaped view and keeps the raw one one click away', async () => {
     show(
@@ -356,7 +357,11 @@ describe('the raw JSON view', () => {
     // Reopened on a job whose outputs are already in hand.
     rerender(
       <RobotsOutputViewer
-        job={job({ id: 'rjob_second', workflow: 'find-scenes', outputs: { scenes: [{ title: 'Opening' }] } })}
+        job={job({
+          id: 'rjob_second',
+          workflow: 'find-scenes',
+          outputs: { scenes: [{ title: 'Opening' }] },
+        })}
         muxApi={pending}
         onClose={vi.fn()}
       />
@@ -459,9 +464,7 @@ describe('the raw JSON view', () => {
     const { rerender } = render(
       <RobotsOutputViewer
         job={job({ outputs: undefined })}
-        muxApi={
-          { getRobotsJob: () => new Promise(() => undefined) } as never
-        }
+        muxApi={{ getRobotsJob: () => new Promise(() => undefined) } as never}
         onClose={vi.fn()}
       />
     );
@@ -472,9 +475,7 @@ describe('the raw JSON view', () => {
     rerender(
       <RobotsOutputViewer
         job={job({ id: 'rjob_2', outputs: undefined })}
-        muxApi={
-          { getRobotsJob: () => Promise.reject(new Error('Mux is down')) } as never
-        }
+        muxApi={{ getRobotsJob: () => Promise.reject(new Error('Mux is down')) } as never}
         onClose={vi.fn()}
       />
     );

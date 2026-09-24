@@ -178,15 +178,13 @@ describe('toApiParamValue', () => {
       toApiParamValue(questionsField, [
         { question: 'Is there a product demo?', answerOptions: 'yes, no, unclear' },
       ])
-    ).toEqual([
-      { question: 'Is there a product demo?', answer_options: ['yes', 'no', 'unclear'] },
-    ]);
+    ).toEqual([{ question: 'Is there a product demo?', answer_options: ['yes', 'no', 'unclear'] }]);
   });
 
   it('omits answer_options so Mux applies its yes/no default', () => {
-    expect(toApiParamValue(questionsField, [{ question: 'Any nudity?', answerOptions: '' }])).toEqual(
-      [{ question: 'Any nudity?' }]
-    );
+    expect(
+      toApiParamValue(questionsField, [{ question: 'Any nudity?', answerOptions: '' }])
+    ).toEqual([{ question: 'Any nudity?' }]);
   });
 
   it('drops blank question rows', () => {
@@ -277,9 +275,7 @@ describe('validateParams', () => {
     // no caption track is accepted by the POST and then errors minutes later — after the editor
     // has been told it started.
     const definition = ROBOTS_CATALOG_BY_KEY['find-key-moments'];
-    expect(validateParams(definition, {}, { hasCaptions: false })[0]).toMatch(
-      /no caption track/
-    );
+    expect(validateParams(definition, {}, { hasCaptions: false })[0]).toMatch(/no caption track/);
     expect(validateParams(definition, { use_shots: true }, { hasCaptions: false })).toEqual([]);
     expect(validateParams(definition, {}, { hasCaptions: true })).toEqual([]);
   });
@@ -375,9 +371,7 @@ describe('validateParams', () => {
     // `mode` defaults to `blank`, so turning censoring on with nothing else filled in is already
     // a valid `auto_censor_profanity` object.
     const definition = ROBOTS_CATALOG_BY_KEY['edit-captions'];
-    expect(validateParams(definition, { track_id: 'track-1', censor_profanity: true })).toEqual(
-      []
-    );
+    expect(validateParams(definition, { track_id: 'track-1', censor_profanity: true })).toEqual([]);
     expect(
       validateParams(definition, {
         track_id: 'track-1',
@@ -416,9 +410,9 @@ describe('validateParams', () => {
     // Length is capped as you type; word count and the forbidden characters are not, and both
     // are documented 400s.
     const definition = ROBOTS_CATALOG_BY_KEY['generate-premium-captions'];
-    expect(
-      validateParams(definition, { phrases: ['one two three four five six'] })[0]
-    ).toMatch(/at most 5 words/);
+    expect(validateParams(definition, { phrases: ['one two three four five six'] })[0]).toMatch(
+      /at most 5 words/
+    );
     expect(validateParams(definition, { phrases: ['Acme <Pro>'] })[0]).toMatch(/cannot contain/);
     expect(validateParams(definition, { phrases: ['Acme Pro', 'Contentful'] })).toEqual([]);
   });
@@ -739,7 +733,7 @@ describe('audio-only assets', () => {
     ).toEqual({ asset_id: 'asset-1', language_code: 'fr' });
   });
 
-  it("says on the use_shots field itself that audio-only assets do not support it", () => {
+  it('says on the use_shots field itself that audio-only assets do not support it', () => {
     const useShots = ROBOTS_CATALOG_BY_KEY['find-key-moments'].params.find(
       (field) => field.name === 'use_shots'
     );
@@ -812,14 +806,18 @@ describe('ask-questions free-form answers', () => {
     expect(field?.min).toBe(1);
     expect(field?.max).toBe(1000);
     expect(field?.helpText).toMatch(/500/);
-    expect(validateParams(definition, {
-      questions: [{ question: 'x', answerOptions: '', answerMode: 'free_form' }],
-      max_free_form_answer_length: 1001,
-    })).toContain('Maximum length of a written answer must be at most 1000.');
-    expect(validateParams(definition, {
-      questions: [{ question: 'x', answerOptions: '', answerMode: 'free_form' }],
-      max_free_form_answer_length: 0,
-    })).toContain('Maximum length of a written answer must be at least 1.');
+    expect(
+      validateParams(definition, {
+        questions: [{ question: 'x', answerOptions: '', answerMode: 'free_form' }],
+        max_free_form_answer_length: 1001,
+      })
+    ).toContain('Maximum length of a written answer must be at most 1000.');
+    expect(
+      validateParams(definition, {
+        questions: [{ question: 'x', answerOptions: '', answerMode: 'free_form' }],
+        max_free_form_answer_length: 0,
+      })
+    ).toContain('Maximum length of a written answer must be at least 1.');
   });
 
   it('does not enforce the option-length limit on a row that sends no options', () => {
@@ -1024,9 +1022,7 @@ describe('selects with no documented API default', () => {
 
   it('stops claiming Mux applies a default it does not document', () => {
     for (const [key, name] of sentinelSelects) {
-      const field = ROBOTS_CATALOG_BY_KEY[key].params.find(
-        (candidate) => candidate.name === name
-      );
+      const field = ROBOTS_CATALOG_BY_KEY[key].params.find((candidate) => candidate.name === name);
       const empty = field?.options?.find((option) => option.value === '');
       expect(empty?.label).toBe('No preference');
     }
@@ -1190,9 +1186,7 @@ describe('parameters that only exist while their precondition holds', () => {
 // --- controlled vocabularies (items 1 and 2) ---
 describe('controlled vocabularies', () => {
   const taxonomyField = (key: RobotsWorkflow, name: string) =>
-    ROBOTS_CATALOG_BY_KEY[key].params.find(
-      (field) => field.name === name
-    ) as RobotsParamField;
+    ROBOTS_CATALOG_BY_KEY[key].params.find((field) => field.name === name) as RobotsParamField;
 
   const value = (overrides: Partial<TaxonomyValue> = {}): TaxonomyValue => ({
     ...emptyTaxonomyValue(),
@@ -1346,12 +1340,10 @@ describe('controlled vocabularies', () => {
     });
 
     // "Supports 1-50 values."
-    expect(
-      withRows(Array.from({ length: 51 }, (_, i) => row({ label: `tag-${i}` })))
-    ).toContain('Tag taxonomy: at most 50 values.');
-    expect(
-      withRows(Array.from({ length: 50 }, (_, i) => row({ label: `tag-${i}` })))
-    ).toEqual([]);
+    expect(withRows(Array.from({ length: 51 }, (_, i) => row({ label: `tag-${i}` })))).toContain(
+      'Tag taxonomy: at most 50 values.'
+    );
+    expect(withRows(Array.from({ length: 50 }, (_, i) => row({ label: `tag-${i}` })))).toEqual([]);
 
     // "Optional customer-facing name for the taxonomy, up to 100 characters."
     expect(withRows([row()], 'n'.repeat(101))[0]).toMatch(/taxonomy name is at most 100/);

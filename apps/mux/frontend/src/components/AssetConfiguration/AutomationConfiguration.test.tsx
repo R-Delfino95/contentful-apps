@@ -3,10 +3,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import '@testing-library/jest-dom';
 import AutomationConfiguration from './AutomationConfiguration';
 import MuxAssetConfigurationModal from './MuxAssetConfigurationModal';
-import {
-  directiveNamesById,
-  useRobotsDirectiveNames,
-} from '../Robots/useRobotsDirectiveNames';
+import { directiveNamesById, useRobotsDirectiveNames } from '../Robots/useRobotsDirectiveNames';
 import { MuxApiService } from '../../util/muxApi';
 
 /**
