@@ -46,6 +46,7 @@ import {
 } from '../../util/robotsTypes';
 import { MuxContentfulObject, Track } from '../../util/types';
 import ExternalLink from '../ExternalLink';
+import RobotsAdminsOnlyNote from './RobotsAdminsOnlyNote';
 import RobotsCapabilityNote from './RobotsCapabilityNote';
 import RobotsJobTable from './RobotsJobTable';
 import RobotsRunModal from './RobotsRunModal';
@@ -93,6 +94,8 @@ interface RobotsPanelProps {
   resync: (params?: { silent?: boolean; skipPlayerResync?: boolean }) => Promise<void>;
   /** Directives configured at install time, offered for ad-hoc runs. */
   defaultDirectiveIds: string[];
+  /** Whether the controls that start or cancel a run render. Results show either way. */
+  canRunRobots: boolean;
 }
 
 type DirectiveListing =
@@ -137,6 +140,7 @@ const RobotsPanelForAsset: FC<RobotsPanelProps & { assetId: string }> = ({
   updateField,
   resync,
   defaultDirectiveIds,
+  canRunRobots,
   assetId,
 }) => {
   /**
@@ -845,10 +849,9 @@ const RobotsPanelForAsset: FC<RobotsPanelProps & { assetId: string }> = ({
     (action) => action.type === 'asset' && action.id === assetId
   );
 
-  // No permission gate. Anyone who can open this entry can spend Mux AI units, which differs from
-  // the Sanity and Strapi plugins — the Contentful requirements never specified one, so it is an
-  // open product question rather than an omission. A gate here would be cosmetic anyway:
-  // `muxProxy` is a generic passthrough and cannot see which path it is proxying.
+  // Who sees the run controls at all is `canRunRobots`: space admins, and everyone else once an
+  // admin turns on "Let everyone run Robots". UI-only — `muxProxy` forwards any path, so it hides
+  // controls rather than refusing calls. See ADR-0016. The reasons below are for those who can.
   const runDisabledReason = isAssetPendingDelete
     ? 'This video is marked for deletion at the next publish.'
     : pendingCreate
@@ -899,13 +902,15 @@ const RobotsPanelForAsset: FC<RobotsPanelProps & { assetId: string }> = ({
     <Box marginTop="spacingS">
       <Flex justifyContent="space-between" alignItems="center" marginBottom="spacingM">
         <Flex alignItems="center" gap="spacingS">
-          <Button
-            variant="primary"
-            isDisabled={!!runDisabledReason || isStartingRun}
-            title={runDisabledReason}
-            onClick={() => setIsRunModalShown(true)}>
-            Run a workflow
-          </Button>
+          {canRunRobots && (
+            <Button
+              variant="primary"
+              isDisabled={!!runDisabledReason || isStartingRun}
+              title={runDisabledReason}
+              onClick={() => setIsRunModalShown(true)}>
+              Run a workflow
+            </Button>
+          )}
           {applyDisabledReason ? (
             // Rendered disabled rather than hidden: a feature that only appears once you have
             // already done the thing that enables it is a feature nobody discovers. The tooltip
@@ -937,7 +942,9 @@ const RobotsPanelForAsset: FC<RobotsPanelProps & { assetId: string }> = ({
         </Button>
       </Flex>
 
-      {runDisabledReason && (
+      {!canRunRobots && <RobotsAdminsOnlyNote />}
+
+      {canRunRobots && runDisabledReason && (
         <Box marginBottom="spacingM">
           <Note variant={pendingCreate ? 'warning' : 'neutral'}>
             {runDisabledReason}
@@ -973,7 +980,7 @@ const RobotsPanelForAsset: FC<RobotsPanelProps & { assetId: string }> = ({
           startedElsewhereIds={startedElsewhereIds}
           detailedJobIds={detailedJobIds}
           unreadableJobIds={failedDetailIds}
-          onCancel={handleCancel}
+          onCancel={canRunRobots ? handleCancel : undefined}
           onViewOutput={setViewedJob}
           onLoadDetail={loadJobDetail}
           cancellingIds={cancellingIds}
@@ -985,55 +992,59 @@ const RobotsPanelForAsset: FC<RobotsPanelProps & { assetId: string }> = ({
 
       <Box marginTop="spacingL">
         <Subheading marginBottom="spacingXs">Directives</Subheading>
-        <Text fontColor="gray600">
+        <Text as="p" fontColor="gray600" marginBottom="spacingM">
           A directive runs several workflows in order.{' '}
           <ExternalLink href={`${ROBOTS_DOCS_URL}-directives`}>Author them in Mux</ExternalLink>.
         </Text>
-        <Flex gap="spacingS" alignItems="flex-end" marginTop="spacingM" marginBottom="spacingM">
-          <Box style={{ minWidth: '18rem' }}>
-            <Select
-              id="robots-directive"
-              aria-label="Directive"
-              value={chosenDirectiveId}
-              isDisabled={availableDirectives.length === 0}
-              onChange={(event) =>
-                setSelectedDirectiveId((event.target as HTMLSelectElement).value)
-              }>
-              <Select.Option value="">{directivePrompt}</Select.Option>
-              {availableDirectives.map((directive) => (
-                <Select.Option key={directive.id} value={directive.id}>
-                  {directive.name || directive.id}
-                </Select.Option>
-              ))}
-            </Select>
-          </Box>
-          <Button
-            variant="secondary"
-            isDisabled={
-              !chosenDirectiveId || !!directiveRunDisabledReason || isStartingDirectiveRun
-            }
-            title={directiveRunDisabledReason}
-            onClick={handleRunDirective}>
-            Run directive
-          </Button>
-        </Flex>
-
-        {pendingDirectiveRun && (
-          <Box marginBottom="spacingM">
-            <Note variant="warning" data-testid="robots-directive-run-unconfirmed">
-              {directiveRunDisabledReason}
-              <Box marginTop="spacingS">
-                {/* As on the job guard: explicit, informed, and not the only way out — the
-                    re-check above resolves this by finding the run. */}
-                <Button
-                  size="small"
-                  variant="secondary"
-                  onClick={() => setPendingDirectiveRun(undefined)}>
-                  Nothing is running — let me try again
-                </Button>
+        {canRunRobots && (
+          <>
+            <Flex gap="spacingS" alignItems="flex-end" marginBottom="spacingM">
+              <Box style={{ minWidth: '18rem' }}>
+                <Select
+                  id="robots-directive"
+                  aria-label="Directive"
+                  value={chosenDirectiveId}
+                  isDisabled={availableDirectives.length === 0}
+                  onChange={(event) =>
+                    setSelectedDirectiveId((event.target as HTMLSelectElement).value)
+                  }>
+                  <Select.Option value="">{directivePrompt}</Select.Option>
+                  {availableDirectives.map((directive) => (
+                    <Select.Option key={directive.id} value={directive.id}>
+                      {directive.name || directive.id}
+                    </Select.Option>
+                  ))}
+                </Select>
               </Box>
-            </Note>
-          </Box>
+              <Button
+                variant="secondary"
+                isDisabled={
+                  !chosenDirectiveId || !!directiveRunDisabledReason || isStartingDirectiveRun
+                }
+                title={directiveRunDisabledReason}
+                onClick={handleRunDirective}>
+                Run directive
+              </Button>
+            </Flex>
+
+            {pendingDirectiveRun && (
+              <Box marginBottom="spacingM">
+                <Note variant="warning" data-testid="robots-directive-run-unconfirmed">
+                  {directiveRunDisabledReason}
+                  <Box marginTop="spacingS">
+                    {/* As on the job guard: explicit, informed, and not the only way out — the
+                        re-check above resolves this by finding the run. */}
+                    <Button
+                      size="small"
+                      variant="secondary"
+                      onClick={() => setPendingDirectiveRun(undefined)}>
+                      Nothing is running — let me try again
+                    </Button>
+                  </Box>
+                </Note>
+              </Box>
+            )}
+          </>
         )}
 
         <RobotsDirectiveRunTable
@@ -1043,18 +1054,20 @@ const RobotsPanelForAsset: FC<RobotsPanelProps & { assetId: string }> = ({
         />
       </Box>
 
-      <RobotsRunModal
-        isShown={isRunModalShown}
-        onClose={() => setIsRunModalShown(false)}
-        onRun={handleRun}
-        assetId={assetId}
-        captions={captions}
-        audioTracks={audioTracks}
-        isAudioOnly={value?.audioOnly}
-        duration={value?.is_live ? undefined : value?.duration}
-        isRunDisabled={!!runDisabledReason || isStartingRun}
-        runDisabledReason={runDisabledReason}
-      />
+      {canRunRobots && (
+        <RobotsRunModal
+          isShown={isRunModalShown}
+          onClose={() => setIsRunModalShown(false)}
+          onRun={handleRun}
+          assetId={assetId}
+          captions={captions}
+          audioTracks={audioTracks}
+          isAudioOnly={value?.audioOnly}
+          duration={value?.is_live ? undefined : value?.duration}
+          isRunDisabled={!!runDisabledReason || isStartingRun}
+          runDisabledReason={runDisabledReason}
+        />
+      )}
 
       <RobotsOutputViewer
         job={viewedJob && (enrichedJobs.find((job) => job.id === viewedJob.id) ?? viewedJob)}

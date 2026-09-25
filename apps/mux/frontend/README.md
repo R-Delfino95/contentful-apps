@@ -286,12 +286,15 @@ The **Robots** tab runs Mux AI workflows on the current video and reads the resu
 - **Outputs reach the Delivery API on the next publish**, the same contract captions already
   have. Unlike captions, the field JSON is the *only* delivery path for `robotsOutputs`, so until
   someone publishes the entry, the data does not exist for the consumer.
-- **No permission model.** Anyone who can open the entry can run a workflow and spend Mux AI
-  units. That is a different posture from the Sanity and Strapi plugins for the same feature, both
-  of which gate directive runs behind roles — the Contentful requirements never specified one, so
-  it is an open product question. Note a gate in the tab would be cosmetic anyway: `muxProxy` is a
-  generic passthrough and cannot see which path it is proxying, so a real gate needs either a
-  Robots-specific app action or path validation inside the function.
+- **Admins run Robots; everyone else once an admin says so.** The controls that start, cancel or
+  choose a run — Run a workflow, Run directive, Cancel, and the directive choice on upload — render
+  for space admins (`sdk.user.spaceMembership.admin`, never a role name), and for everyone else
+  only while **Let everyone run Robots** is on in the app configuration. It stays off until an
+  admin saves it. Everyone still sees the results and can apply them, and the admin's default
+  directives still run on every upload, listed read-only for anyone who cannot change them. This
+  hides controls; it is not a permission. `muxProxy` is a generic passthrough and the Mux secret
+  reaches the browser in the installation parameters, so a determined user can still spend units —
+  a real boundary needs the secret moved server-side first. See ADR-0016.
 - **Only what ran through Contentful is recorded as a job.** A job is recognised as this plugin's if
   it is already recorded on the entry (the durable test — see the v4 note above), or carries a
   `passthrough` naming this space, environment and entry, or was dispatched by a run of a

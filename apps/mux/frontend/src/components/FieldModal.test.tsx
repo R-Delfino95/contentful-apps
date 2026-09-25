@@ -263,6 +263,7 @@ describe('the modals that use it', () => {
           onConfirm={vi.fn()}
           installationParams={{ muxEnableSignedUrls: false }}
           sdk={sdk}
+          canChooseDirectives
         />
       ),
     ],

@@ -5,6 +5,7 @@ import AutomationConfiguration from './AutomationConfiguration';
 import MuxAssetConfigurationModal from './MuxAssetConfigurationModal';
 import { directiveNamesById, useRobotsDirectiveNames } from '../Robots/useRobotsDirectiveNames';
 import { MuxApiService } from '../../util/muxApi';
+import { ROBOTS_DIRECTIVES_SET_BY_ADMIN } from '../../util/robotsAccess';
 
 /**
  * The Automation section of the upload modal.
@@ -53,6 +54,50 @@ describe('AutomationConfiguration', () => {
     );
 
     expect(screen.getByText('drv_1')).toBeInTheDocument();
+  });
+});
+
+/**
+ * Someone who cannot run Robots still uploads with the admin's directives: they are listed, not
+ * offered. See ADR-0016.
+ */
+describe('AutomationConfiguration, read-only', () => {
+  const renderReadOnly = (onChange = vi.fn()) => {
+    render(
+      <AutomationConfiguration
+        availableDirectiveIds={['drv_1', 'drv_gone']}
+        selectedDirectiveIds={['drv_1']}
+        missingDirectiveIds={['drv_gone']}
+        directiveNames={{ drv_1: 'Publish pipeline', drv_gone: 'drv_gone' }}
+        isReadOnly
+        onChange={onChange}
+      />
+    );
+    return onChange;
+  };
+
+  it('lists the defaults with who set them, and offers no checkbox', () => {
+    renderReadOnly();
+
+    expect(screen.getByText(ROBOTS_DIRECTIVES_SET_BY_ADMIN)).toBeInTheDocument();
+    expect(screen.getByText('Publish pipeline')).toBeInTheDocument();
+    expect(screen.getByText('drv_1')).toBeInTheDocument();
+    expect(screen.queryByRole('checkbox')).not.toBeInTheDocument();
+  });
+
+  it('still says which of them Mux does not have', () => {
+    renderReadOnly();
+
+    expect(
+      screen.getByText(/Mux does not have this directive, so it will not run/)
+    ).toBeInTheDocument();
+  });
+
+  it('never calls onChange', () => {
+    const onChange = renderReadOnly();
+
+    fireEvent.click(screen.getByText('Publish pipeline'));
+    expect(onChange).not.toHaveBeenCalled();
   });
 });
 
@@ -204,7 +249,10 @@ describe('directives Mux does not have', () => {
       field: { id: 'muxVideo' },
     } as never;
 
-    const upload = async (listRobotsDirectives: () => Promise<unknown>) => {
+    const upload = async (
+      listRobotsDirectives: () => Promise<unknown>,
+      canChooseDirectives = true
+    ) => {
       const onConfirm = vi.fn();
       render(
         <MuxAssetConfigurationModal
@@ -216,6 +264,7 @@ describe('directives Mux does not have', () => {
             muxDefaultDirectiveIds: ['drv_live', 'drv_gone'],
           }}
           sdk={sdk}
+          canChooseDirectives={canChooseDirectives}
           muxApi={{ listRobotsDirectives } as never}
         />
       );
@@ -239,6 +288,30 @@ describe('directives Mux does not have', () => {
         })
       ).toEqual(['drv_live', 'drv_gone']);
       consoleError.mockRestore();
+    });
+
+    it('attaches the defaults for someone who cannot choose them', async () => {
+      expect(
+        await upload(async () => ({ data: [{ id: 'drv_live', name: 'Live' }] }), false)
+      ).toEqual(['drv_live']);
+    });
+
+    it('lists the defaults instead of offering them, for someone who cannot choose', async () => {
+      render(
+        <MuxAssetConfigurationModal
+          isShown
+          onClose={vi.fn()}
+          onConfirm={vi.fn()}
+          installationParams={{ muxEnableSignedUrls: false, muxDefaultDirectiveIds: ['drv_live'] }}
+          sdk={sdk}
+          canChooseDirectives={false}
+          muxApi={{ listRobotsDirectives: async () => ({ data: [] }) } as never}
+        />
+      );
+      fireEvent.click(screen.getByRole('button', { name: 'Automation' }));
+
+      expect(await screen.findByText(ROBOTS_DIRECTIVES_SET_BY_ADMIN)).toBeInTheDocument();
+      expect(screen.queryByRole('checkbox', { name: /drv_live/ })).not.toBeInTheDocument();
     });
   });
 });

@@ -54,6 +54,7 @@ const renderPanel = (overrides: Record<string, any> = {}) =>
       updateField={overrides.updateField ?? vi.fn(async () => undefined)}
       resync={overrides.resync ?? vi.fn(async () => undefined)}
       defaultDirectiveIds={overrides.defaultDirectiveIds ?? []}
+      canRunRobots={overrides.canRunRobots ?? true}
     />
   );
 
@@ -187,21 +188,58 @@ describe('RobotsPanel capability states', () => {
   });
 });
 
-describe('RobotsPanel spend guards', () => {
+/**
+ * Admins always see the run controls; everyone else only once an admin turns on "Let everyone run
+ * Robots". The switch is resolved by the caller (`canRunRobots`), so the panel is told the answer.
+ * Results stay visible either way, because reading costs nothing. See ADR-0016.
+ */
+describe('RobotsPanel for people who cannot run Robots', () => {
   beforeEach(() => {
     resetRobotsCapabilityCache();
     vi.clearAllMocks();
   });
 
-  it('lets anyone who can open the entry run a workflow', async () => {
-    // Deliberate, and an open product question: Sanity and Strapi both gate directive runs behind
-    // roles, the Contentful requirements never specified one. Pinned here so adding a gate later
-    // is a decision someone makes on purpose.
-    renderPanel({ muxApi: apiThatReturns([]) });
+  const jobs = [
+    { id: 'rjob_running', workflow: 'summarize', status: 'processing', created_at: 1_700_000_100 },
+    { id: 'rjob_done', workflow: 'moderate', status: 'completed', created_at: 1_700_000_000 },
+  ];
+  const directiveApi = () => ({
+    ...apiThatReturns(jobs),
+    listRobotsDirectives: vi.fn(async () => ({ data: [{ id: 'drv_1', name: 'Publish' }] })),
+  });
+
+  it('offers the run controls to someone who can', async () => {
+    renderPanel({ muxApi: directiveApi(), canRunRobots: true });
 
     await waitFor(() =>
       expect(screen.getByRole('button', { name: 'Run a workflow' })).toBeEnabled()
     );
+    expect(screen.getByRole('button', { name: 'Run directive' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Cancel' })).toBeInTheDocument();
+    expect(screen.queryByTestId('robots-admins-only')).not.toBeInTheDocument();
+  });
+
+  it('shows everyone else the results, and nothing that starts or stops a run', async () => {
+    renderPanel({ muxApi: directiveApi(), canRunRobots: false });
+
+    await waitFor(() => expect(screen.getByTestId('robots_job_table')).toBeInTheDocument());
+    expect(screen.getByTestId('robots-admins-only')).toHaveTextContent(
+      /Only space admins can run Robots here/
+    );
+    expect(screen.getByRole('button', { name: 'View output' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Apply summary' })).toBeInTheDocument();
+
+    expect(screen.queryByRole('button', { name: 'Run a workflow' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Run directive' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('combobox', { name: 'Directive' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Cancel' })).not.toBeInTheDocument();
+  });
+});
+
+describe('RobotsPanel spend guards', () => {
+  beforeEach(() => {
+    resetRobotsCapabilityCache();
+    vi.clearAllMocks();
   });
 
   it('blocks a run on a video already queued for deletion', async () => {
@@ -1732,6 +1770,7 @@ describe('RobotsPanel — a finished job reaching the rest of the editor', () =>
           updateField={vi.fn(async () => undefined)}
           resync={vi.fn(async () => undefined)}
           defaultDirectiveIds={[]}
+          canRunRobots
         />
       );
 
@@ -2340,6 +2379,7 @@ describe('RobotsPanel — when the asset goes away', () => {
         updateField={updateField}
         resync={vi.fn(async () => undefined)}
         defaultDirectiveIds={[]}
+        canRunRobots
       />
     );
     await waitFor(() => expect(screen.getByTestId('robots_job_table')).toBeInTheDocument());
@@ -2354,6 +2394,7 @@ describe('RobotsPanel — when the asset goes away', () => {
         updateField={updateField}
         resync={vi.fn(async () => undefined)}
         defaultDirectiveIds={[]}
+        canRunRobots
       />
     );
 
@@ -2391,6 +2432,7 @@ describe('RobotsPanel — when the asset goes away', () => {
       updateField,
       resync: vi.fn(async () => undefined),
       defaultDirectiveIds: [],
+      canRunRobots: true,
     });
 
     const { rerender } = render(<RobotsPanel {...props('asset-1')} />);
@@ -3857,6 +3899,7 @@ const StatefulPanel: FC<{
       updateField={updateField}
       resync={noResync}
       defaultDirectiveIds={noDirectives}
+      canRunRobots
     />
   );
 };

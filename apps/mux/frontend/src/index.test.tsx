@@ -79,6 +79,15 @@ const SDK_MOCK = {
   state: {
     isDeleting: false,
   },
+  // An admin, so the Robots tab renders its run controls and a test about them means something.
+  user: {
+    sys: { id: 'user-id', type: 'User' },
+    spaceMembership: {
+      sys: { id: 'membership-id', type: 'SpaceMembership' },
+      admin: true,
+      roles: [],
+    },
+  },
   ids: {
     environment: 'environment-id',
     space: 'space-id',

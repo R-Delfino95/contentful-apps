@@ -82,7 +82,8 @@ interface RobotsJobTableProps {
   detailedJobIds: Set<string>;
   /** Ids whose detail read was attempted and failed. */
   unreadableJobIds: Set<string>;
-  onCancel: (job: RobotsJob) => void;
+  /** Absent for someone who cannot run Robots, and then no row offers Cancel. See ADR-0016. */
+  onCancel?: (job: RobotsJob) => void;
   onViewOutput: (job: RobotsJob) => void;
   /** Reads one job's full record, for a row the background pass never reached. */
   onLoadDetail: (job: RobotsJob) => void;
@@ -106,6 +107,55 @@ const detailState = (
   if (detailedJobIds.has(job.id)) return 'loaded';
   if (unreadableJobIds.has(job.id)) return 'unreadable';
   return 'unread';
+};
+
+interface JobActionsProps {
+  job: RobotsJob;
+  isCancelling: boolean;
+  onCancel?: (job: RobotsJob) => void;
+  onViewOutput: (job: RobotsJob) => void;
+}
+
+/**
+ * A missing button reads as a rendering bug, so a row with no action to offer says what it would
+ * have shown instead.
+ */
+const JobActions: FC<JobActionsProps> = ({ job, isCancelling, onCancel, onViewOutput }) => {
+  if (job.status === 'pending' || job.status === 'processing') {
+    if (!onCancel) {
+      return (
+        <Text fontColor="gray600" fontSize="fontSizeS" data-testid={`robots-running-${job.id}`}>
+          Output appears when it finishes
+        </Text>
+      );
+    }
+    return (
+      <Button
+        size="small"
+        variant="negative"
+        isDisabled={isCancelling}
+        isLoading={isCancelling}
+        onClick={() => onCancel(job)}>
+        Cancel
+      </Button>
+    );
+  }
+
+  if (job.status === 'cancelled') {
+    // A cancelled job stopped before it produced anything, so the modal could only ever say so —
+    // after paying a round trip to find out.
+    return (
+      <Text fontColor="gray600" fontSize="fontSizeS" data-testid={`robots-no-output-${job.id}`}>
+        Nothing to view — cancelled before it produced output
+      </Text>
+    );
+  }
+
+  return (
+    <Button size="small" variant="secondary" onClick={() => onViewOutput(job)}>
+      View output
+    </Button>
+  );
 };
 
 const RobotsJobTable: FC<RobotsJobTableProps> = ({
@@ -155,13 +205,11 @@ const RobotsJobTable: FC<RobotsJobTableProps> = ({
         {head}
         <Table.Body>
           {jobs.map((job) => {
-            const isRunning = job.status === 'pending' || job.status === 'processing';
             const units = unitsCell(job, detailState(job, detailedJobIds, unreadableJobIds));
             // The background read is coming, so this is loading, not "Not loaded".
             const isLoadingDetail =
               loadingDetailIds.includes(job.id) ||
               (units.isLoadable && !!pendingDetailIds?.has(job.id));
-            const isCancelling = cancellingIds.includes(job.id);
 
             return (
               <Table.Row key={job.id}>
@@ -198,30 +246,12 @@ const RobotsJobTable: FC<RobotsJobTableProps> = ({
                   )}
                 </Table.Cell>
                 <Table.Cell>
-                  {isRunning ? (
-                    <Button
-                      size="small"
-                      variant="negative"
-                      isDisabled={isCancelling}
-                      isLoading={isCancelling}
-                      onClick={() => onCancel(job)}>
-                      Cancel
-                    </Button>
-                  ) : job.status === 'cancelled' ? (
-                    // A cancelled job stopped before it produced anything, so the modal could only
-                    // ever say so — after paying a round trip to find out. A missing button reads
-                    // as a rendering bug, so the cell says what it would have shown instead.
-                    <Text
-                      fontColor="gray600"
-                      fontSize="fontSizeS"
-                      data-testid={`robots-no-output-${job.id}`}>
-                      Nothing to view — cancelled before it produced output
-                    </Text>
-                  ) : (
-                    <Button size="small" variant="secondary" onClick={() => onViewOutput(job)}>
-                      View output
-                    </Button>
-                  )}
+                  <JobActions
+                    job={job}
+                    isCancelling={cancellingIds.includes(job.id)}
+                    onCancel={onCancel}
+                    onViewOutput={onViewOutput}
+                  />
                 </Table.Cell>
               </Table.Row>
             );

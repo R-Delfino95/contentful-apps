@@ -55,7 +55,8 @@ export interface ModalData {
   metadataConfig: MetadataConfig;
   /**
    * Robots directives to attach at asset creation, pre-filled from the installation parameters
-   * and deselectable per upload. Empty means no automation on this upload.
+   * and deselectable per upload by anyone who can run Robots. Empty means no automation on this
+   * upload.
    */
   directiveIds: string[];
 }
@@ -72,6 +73,11 @@ interface MuxAssetConfigurationModalProps {
   isEditMode?: boolean;
   asset?: MuxContentfulObject;
   sdk: FieldExtensionSDK;
+  /**
+   * Whether this person may change which directives run on the upload. When not, the configured
+   * defaults are listed read-only and still attached. See `canRunRobots`, ADR-0016.
+   */
+  canChooseDirectives: boolean;
   /** Only used to put names on the configured Robots directives. Absent until the app has one. */
   muxApi?: MuxApiService;
   /** File being uploaded (from drag & drop or file picker) */
@@ -88,6 +94,7 @@ const ModalContent: FC<MuxAssetConfigurationModalProps> = ({
   isEditMode = false,
   asset,
   sdk,
+  canChooseDirectives,
   muxApi,
   file = null,
   pendingUploadURL = null,
@@ -322,6 +329,7 @@ const ModalContent: FC<MuxAssetConfigurationModalProps> = ({
                   selectedDirectiveIds={modalData.directiveIds}
                   missingDirectiveIds={missingDirectiveIds}
                   directiveNames={directiveNames}
+                  isReadOnly={!canChooseDirectives}
                   onChange={(directiveIds) => setModalData((prev) => ({ ...prev, directiveIds }))}
                 />
               </Accordion.Item>

@@ -150,6 +150,16 @@ describe('a cancelled row', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
     expect(onCancel).toHaveBeenCalled();
   });
+
+  it('offers no Cancel without `onCancel`, and says what the row is waiting for', () => {
+    // Someone who cannot run Robots (ADR-0016). The cell still is not blank.
+    show([job({ status: 'processing' })], { onCancel: undefined });
+
+    expect(screen.queryByRole('button', { name: 'Cancel' })).not.toBeInTheDocument();
+    expect(screen.getByTestId('robots-running-rjob_1')).toHaveTextContent(
+      'Output appears when it finishes'
+    );
+  });
 });
 
 describe('the Units column as an affordance', () => {

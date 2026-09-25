@@ -14,6 +14,7 @@ import {
 import MuxLogoSvg from '../images/mux-logo.svg';
 import './config.css';
 import ApiClient from '../util/apiClient';
+import { ROBOTS_ALLOW_EVERYONE_HELP_TEXT, ROBOTS_ALLOW_EVERYONE_LABEL } from '../util/robotsAccess';
 import RobotsConfiguration from '../components/RobotsConfiguration';
 
 import {
@@ -52,6 +53,8 @@ interface IParameters {
    * already duplicated before this key.
    */
   muxDefaultDirectiveIds?: string[];
+  /** Lets non-admins run Robots. Unset means admins only — see `canRunRobots`, ADR-0016. */
+  muxRobotsAllowEveryone?: boolean;
 }
 
 interface IState {
@@ -238,6 +241,7 @@ class Config extends React.Component<ConfigProps, IState> {
         muxEnableDRM,
         muxDRMConfigurationId,
         muxDefaultDirectiveIds,
+        muxRobotsAllowEveryone,
       },
       contentTypes,
       compatibleFields,
@@ -456,6 +460,24 @@ class Config extends React.Component<ConfigProps, IState> {
                   })
                 }
               />
+            </Box>
+            <Box marginTop="spacingL">
+              <Subheading>Who can run Robots</Subheading>
+              <Checkbox
+                id="mux-robots-allow-everyone"
+                helpText={ROBOTS_ALLOW_EVERYONE_HELP_TEXT}
+                name="mux-robots-allow-everyone"
+                isChecked={muxRobotsAllowEveryone === true}
+                onChange={(e) =>
+                  this.setState({
+                    parameters: {
+                      ...this.state.parameters,
+                      muxRobotsAllowEveryone: (e.target as HTMLInputElement).checked,
+                    },
+                  })
+                }>
+                {ROBOTS_ALLOW_EVERYONE_LABEL}
+              </Checkbox>
             </Box>
           </Form>
           <hr className="config-splitter" />

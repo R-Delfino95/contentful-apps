@@ -19,6 +19,8 @@ export interface InstallationParams {
   muxDRMConfigurationId?: string;
   /** Robots directives attached to every asset this app creates. */
   muxDefaultDirectiveIds?: string[];
+  /** Lets non-admins run Robots. Unset means admins only — see `canRunRobots`, ADR-0016. */
+  muxRobotsAllowEveryone?: boolean;
 }
 
 export interface AppState {

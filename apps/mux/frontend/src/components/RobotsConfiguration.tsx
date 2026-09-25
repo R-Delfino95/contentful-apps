@@ -166,8 +166,8 @@ const RobotsConfiguration: FC<RobotsConfigurationProps> = ({
     <>
       <Paragraph>
         A directive runs several Robots workflows in order. Pick the ones that should run
-        automatically on every video uploaded through this app — editors can still deselect them per
-        upload, and run any directive ad hoc from the Robots tab.{' '}
+        automatically on every video uploaded through this app — anyone who can run Robots can still
+        deselect them per upload, and run any directive ad hoc from the Robots tab.{' '}
         <ExternalLink href={`${ROBOTS_DOCS_URL}-directives`}>Author directives in Mux</ExternalLink>
       </Paragraph>
 
@@ -175,7 +175,7 @@ const RobotsConfiguration: FC<RobotsConfigurationProps> = ({
         <Note variant="warning" title="This spends money on every upload">
           The {directiveIds.length === 1 ? 'directive' : 'directives'} selected below run on every
           video uploaded through this app and consume Mux AI units, with no per-video confirm step.
-          Editors can deselect them per upload.
+          Only people who can run Robots can deselect them per upload.
         </Note>
       ) : (
         <Note variant="neutral">

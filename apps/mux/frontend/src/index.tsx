@@ -59,6 +59,7 @@ import Sidebar from './locations/Sidebar';
 import { deriveFieldVersion } from './util/muxFieldVersion';
 import { currentPlaybackPolicy, hasAnyPlaybackId } from './util/playbackPolicy';
 import { unfinishedJobRecords } from './util/robots';
+import { canRunRobots, isSpaceAdmin } from './util/robotsAccess';
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -217,12 +218,18 @@ export class App extends React.Component<AppProps, AppState> {
    */
   private uploadDirectiveIds: string[] = [];
   private hasAnnouncedRobotsOnUpload = false;
+  /**
+   * Whether this person sees the controls that run Robots (ADR-0016). Worked out once: the user
+   * and the installation parameters are both handed to the iframe when it loads.
+   */
+  private readonly userCanRunRobots: boolean;
 
   constructor(props: AppProps) {
     super(props);
 
-    const { muxAccessTokenId, muxAccessTokenSecret } = this.props.sdk.parameters
-      .installation as InstallationParams;
+    const installation = this.props.sdk.parameters.installation as InstallationParams;
+    const { muxAccessTokenId, muxAccessTokenSecret } = installation;
+    this.userCanRunRobots = canRunRobots(isSpaceAdmin(this.props.sdk.user), installation);
 
     this.cmaClient = createClient(
       { apiAdapter: this.props.sdk.cmaAdapter },
@@ -1664,6 +1671,7 @@ export class App extends React.Component<AppProps, AppState> {
         installationParams={this.props.sdk.parameters.installation as InstallationParams}
         asset={this.state.value}
         sdk={this.props.sdk}
+        canChooseDirectives={this.userCanRunRobots}
         muxApi={this.muxApi}
         file={this.state.file}
         pendingUploadURL={this.state.pendingUploadURL}
@@ -2008,6 +2016,7 @@ export class App extends React.Component<AppProps, AppState> {
                           (this.props.sdk.parameters.installation as InstallationParams)
                             .muxDefaultDirectiveIds ?? NO_DIRECTIVE_IDS
                         }
+                        canRunRobots={this.userCanRunRobots}
                       />
                     </RobotsErrorBoundary>
                   </div>
