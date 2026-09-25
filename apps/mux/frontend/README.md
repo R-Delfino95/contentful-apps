@@ -41,7 +41,11 @@ can see.
 
 ### v4 — `robotsOutputs`
 
-Written only when a Robots job produces output that is persisted (summarize, moderation).
+The newest summarize and moderation output on the video, **whoever started the job**: this entry,
+another entry, a directive, or the Mux dashboard. An output describes the video, like the asset
+mirror; which jobs this entry ran is `robotsJobs`' question, and that one still follows ownership.
+A job supplies an output only when its own record names this asset (`parameters.asset_id` on the
+single-job GET). See ADR-0005's 2026-09-25 amendment.
 
 All three Robots keys — `robotsJobs`, `robotsOutputs` and `robotsDirectiveRuns` — sit at **v4**,
 not at three successive versions. They ship in one release, so no build ever writes one without
@@ -70,13 +74,14 @@ extra number is one more place the browser's copy of the rule and the function's
 ```
 
 Keyed by **workflow, not by job**, so there is at most one summary and one moderation result per
-locale and the newest completed run wins. Running summarize again to get a better title overwrites
-the previous one on the entry, which is not reversible from Contentful. The history is not lost:
-every job stays in `robotsJobs`, so *which* runs happened and when is answerable from the entry
-indefinitely, and the superseded output itself is readable from
-`GET /robots/v0/jobs/{workflow}/{id}` for the 30 days Mux keeps the job. The surviving output
-carries its own `jobId` and `completedAt`, so it is always traceable to the run that produced it.
-See `docs/ADRs/0008`.
+locale and the newest completed run wins, wherever it ran. Running summarize again to get a better
+title overwrites the previous one on the entry, which is not reversible from Contentful. The
+history is not lost: every job run from this entry stays in `robotsJobs`, so *which* runs happened
+here and when is answerable from the entry indefinitely, and the superseded output itself is
+readable from `GET /robots/v0/jobs/{workflow}/{id}` for the 30 days Mux keeps the job. The
+surviving output carries its own `jobId` and `completedAt`, so it is always traceable to the run
+that produced it; a `jobId` that `robotsJobs` does not hold is a run started elsewhere. See
+`docs/ADRs/0008`.
 
 Retrievable through the Delivery API with the entry, but **not queryable**: the CDA cannot
 filter, search or order on values inside a JSON object field. To query by a generated title or
@@ -267,15 +272,17 @@ The **Robots** tab runs Mux AI workflows on the current video and reads the resu
 - Shows job status, survives reload, and cancels a running job.
 - Runs *directives* — several workflows in order — either ad hoc from the tab, or automatically
   on every new upload via **Robots** in the app configuration.
-- Writes summary and moderation output onto the field JSON (v4), and can apply generated
-  title/description/tags onto the editor's own entry fields with a preview.
+- Keeps the video's newest summary and moderation output on the field JSON (v4), whoever ran the
+  job, and can apply generated title/description/tags onto the editor's own entry fields with a
+  preview.
 
 ### Notes
 
 - **Polling, not webhooks.** Contentful cannot receive Mux webhooks — no App Function type
   exposes an HTTP endpoint Mux could call — so job status is polled while the tab is open, and
   reconciled from the API on the next open. A job that finishes with nobody watching is picked up
-  when someone next opens the entry.
+  the next time someone opens the Robots tab, or the entry itself while it records the job as still
+  running (ADR-0013).
 - **Outputs reach the Delivery API on the next publish**, the same contract captions already
   have. Unlike captions, the field JSON is the *only* delivery path for `robotsOutputs`, so until
   someone publishes the entry, the data does not exist for the consumer.
@@ -285,16 +292,20 @@ The **Robots** tab runs Mux AI workflows on the current video and reads the resu
   it is an open product question. Note a gate in the tab would be cosmetic anyway: `muxProxy` is a
   generic passthrough and cannot see which path it is proxying, so a real gate needs either a
   Robots-specific app action or path validation inside the function.
-- **Only what ran through Contentful is stored.** A job is recognised as this plugin's if it is
-  already recorded on the entry (the durable test — see the v4 note above), or carries a
+- **Only what ran through Contentful is recorded as a job.** A job is recognised as this plugin's if
+  it is already recorded on the entry (the durable test — see the v4 note above), or carries a
   `passthrough` naming this space, environment and entry, or was dispatched by a run of a
   directive configured at install, recorded on the entry, or started from the tab. A job someone
   ran from the Mux dashboard against the same video, or one a directive run started elsewhere
   dispatched, is *listed* in the tab — the list reads the API, so it shows everything, and marks
-  it *Started elsewhere* — but never written to the entry. And once
-  a record is stored it stays:
-  Robots purges jobs after 30 days, and a finished run is a fact about this entry's history, so it
-  is not removed when the API stops returning it. It simply stops updating.
+  it *Started elsewhere* — but never recorded. And once a record is stored it stays: Robots purges
+  jobs after 30 days, and a finished run is a fact about this entry's history, so it is not removed
+  when the API stops returning it. It simply stops updating.
+- **Outputs are the exception.** A summary or moderation result is kept whoever started the job,
+  because it describes the video rather than this entry's activity. So the first time someone
+  opens the Robots tab on an entry whose video was summarized or moderated elsewhere, the entry
+  gains `robotsOutputs` (and v4) and shows *Changed*, with nothing run from Contentful. See
+  ADR-0005's 2026-09-25 amendment.
 - **Storing is narrower than showing, and a bare `contentful@` prefix proves nothing.** Because
   the tab reads detail for jobs it does not own, it also sees *their* `passthrough` — and the
   prefix identifies the app, not the install, so a second Contentful install pointed at the same
@@ -322,7 +333,8 @@ The **Robots** tab runs Mux AI workflows on the current video and reads the resu
   empty output modal reads as a bug, while reading a job costs nothing and charges nobody. It is
   bounded instead — terminal jobs only, the newest 20 on the asset, a handful per pass — and a
   detail read that fails is remembered as failed, so a 404 on a purged job does not get
-  re-requested on every poll tick for as long as the entry stays open.
+  re-requested on every poll tick for as long as the entry stays open. Outputs come from this same
+  read, so a summary more than 20 jobs back is kept only once someone opens its row.
 - **No client analytics.** The app has no telemetry of any kind. Job attribution is done Mux-side
   instead: every proxied call carries `x-source-platform: contentful`, and every job created here
   carries `contentful@<version>|<space>:<environment>:<entry>|<16 hex>` in its `passthrough`.

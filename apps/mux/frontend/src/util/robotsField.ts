@@ -145,13 +145,22 @@ function extractModerateOutput(job: RobotsJob): RobotsModerateOutput | undefined
  * Only summarize and moderation: the rest either already land on the Mux asset (captions, dubs,
  * thumbnails) or are too large for a JSON field (scenes, key moments). Keyed by workflow, so
  * re-running supersedes rather than accumulating. See ADR-0008.
+ *
+ * Whoever started the job: an output describes the video, not this entry's activity. What it must
+ * be is *this* video's, so each job is checked against `assetId` by its own record — not by the
+ * list it came from — and one that names no asset writes nothing. See ADR-0005's 2026-09-25
+ * amendment.
  */
 export function mergeRobotsOutputs(
   existing: RobotsOutputs | undefined,
-  jobs: RobotsJob[]
+  jobs: RobotsJob[],
+  assetId: string | undefined
 ): RobotsOutputs | undefined {
   const relevant = jobs.filter(
-    (job) => job.status === 'completed' && PERSISTED_OUTPUT_WORKFLOWS.includes(job.workflow)
+    (job) =>
+      job.status === 'completed' &&
+      PERSISTED_OUTPUT_WORKFLOWS.includes(job.workflow) &&
+      ranOnAsset(job, assetId)
   );
   if (relevant.length === 0) return existing;
 
@@ -180,6 +189,16 @@ export function mergeRobotsOutputs(
   return changed ? next : existing;
 }
 
+/** `parameters` is on the single-job GET only, so a list summary never qualifies. */
+function ranOnAsset(job: RobotsJob, assetId: string | undefined): boolean {
+  return !!assetId && job.parameters?.asset_id === assetId;
+}
+
+/**
+ * A strict order, so every read order and every open session settles on the same output. Mux
+ * timestamps are whole seconds, so ties are real; the job id breaks them. See ADR-0008's
+ * 2026-09-25 amendment.
+ */
 function isNewerOutput(
   current: { jobId: string; completedAt?: number } | undefined,
   candidate: { jobId: string; completedAt?: number }
@@ -188,7 +207,17 @@ function isNewerOutput(
   if (current.jobId === candidate.jobId) {
     return JSON.stringify(current) !== JSON.stringify(candidate);
   }
-  return (candidate.completedAt ?? 0) >= (current.completedAt ?? 0);
+  const currentAt = completionTime(current);
+  const candidateAt = completionTime(candidate);
+  return candidateAt > currentAt || (candidateAt === currentAt && candidate.jobId > current.jobId);
+}
+
+/**
+ * Oldest when missing — or not a number, since the stored value is user-reachable JSON and a
+ * string there would make every comparison false and pin that output for good.
+ */
+function completionTime(output: { completedAt?: unknown }): number {
+  return typeof output.completedAt === 'number' ? output.completedAt : 0;
 }
 
 function toDirectiveRunRecord(run: RobotsDirectiveRun): RobotsDirectiveRunRecord | undefined {
@@ -311,9 +340,9 @@ function applyDirectiveRunRecords(
 }
 
 /**
- * The jobs this entry claims: what `applyRobotsJobsToValue` stores, and what the job table does
- * not mark as started elsewhere. One rule for both, so the marker can never disagree with what
- * the entry will hold.
+ * The jobs this entry claims: what `applyRobotsJobsToValue` records in `robotsJobs`, and what the
+ * job table does not mark as started elsewhere. One rule for both, so the marker can never
+ * disagree with what the entry will hold.
  */
 export function jobsClaimedByEntry(
   value: MuxContentfulObject | undefined,
@@ -345,11 +374,12 @@ export function applyRobotsJobsToValue(
 ): MuxContentfulObject | undefined {
   if (!value) return value;
 
-  // Only what this plugin originated goes on the entry. See `isPluginOriginatedJob`.
+  // Records are what this entry did, so only what it claims is recorded. Outputs describe the
+  // video, so every job on its asset feeds them. See ADR-0005's 2026-09-25 amendment.
   const ours = jobsClaimedByEntry(value, jobs, directiveRunJobIds, options);
 
   const robotsJobs = mergeJobRecords(value.robotsJobs, ours);
-  const robotsOutputs = mergeRobotsOutputs(value.robotsOutputs, ours);
+  const robotsOutputs = mergeRobotsOutputs(value.robotsOutputs, jobs, value.assetId);
 
   if (robotsJobs === value.robotsJobs && robotsOutputs === value.robotsOutputs) return value;
 
@@ -369,9 +399,9 @@ export function applyRobotsJobsToValue(
  * Jobs that still need `GET /robots/v0/jobs/{workflow}/{id}`, where `outputs`, `units_consumed`,
  * `errors` and `passthrough` live.
  *
- * Deliberately not filtered by ownership: the entry records only our jobs, but the tab *shows*
- * every job on the asset, and reading one is a GET that charges nobody. What must not happen is a
- * foreign job reaching the entry, and that is enforced in `applyRobotsJobsToValue`.
+ * Deliberately not filtered by ownership: the tab *shows* every job on the asset, reading one is a
+ * GET that charges nobody, and this read is where every summarize and moderate output comes from,
+ * whoever started the job. Which job *records* reach the entry is `applyRobotsJobsToValue`'s call.
  *
  * Bounded in two directions because the candidate pool is every terminal job on the asset:
  * `window` caps how far back we look at all, `limit` caps one pass. The bound must not lie,

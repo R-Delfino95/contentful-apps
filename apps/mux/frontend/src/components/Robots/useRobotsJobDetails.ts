@@ -16,10 +16,10 @@ import { RobotsJob } from '../../util/robotsTypes';
  * - `loadJobDetail`, one row, because the editor clicked the Units cell on a row past that window;
  * - `rememberJobDetail`, keeping what the output modal already paid for.
  *
- * Ownership is not consulted. The entry records only our jobs, but the tab *shows* every job on
- * the asset, and reading one is a GET that charges nobody — a row with a permanently blank Units
- * column looks like a bug. What must not happen is a foreign job reaching the entry, and that is
- * enforced in `applyRobotsJobsToValue`.
+ * Ownership is not consulted. The tab *shows* every job on the asset, and reading one is a GET that
+ * charges nobody — a row with a permanently blank Units column looks like a bug. It is also where
+ * every summarize and moderate output comes from, whoever started the job. Which job records reach
+ * the entry is decided in `applyRobotsJobsToValue`.
  */
 export interface RobotsJobDetails {
   /** The list summary, overlaid with whatever detail has been read for each job. */

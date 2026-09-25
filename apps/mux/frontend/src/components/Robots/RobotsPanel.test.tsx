@@ -1,4 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
+import { FC, useCallback, useRef, useState } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -710,6 +711,7 @@ describe('RobotsPanel — the fields the list leaves out', () => {
           ...summary(),
           units_consumed: 4,
           passthrough: 'contentful@x|req-1',
+          parameters: { asset_id: 'asset-1' },
           outputs: { title: 'A generated title', tags: ['alpha'] },
         },
       }),
@@ -779,7 +781,7 @@ describe('RobotsPanel — the fields the list leaves out', () => {
     );
     expect(await screen.findByText('7')).toBeInTheDocument();
 
-    // But it still never reaches the entry.
+    // But it is still never recorded.
     expect(read()?.robotsJobs).toBeUndefined();
   });
 
@@ -1017,6 +1019,29 @@ describe('RobotsPanel — Units past the detail window', () => {
     // One read, not one per open: the row is filled by the fetch the modal was making anyway.
     expect(muxApi.getRobotsJob).toHaveBeenCalledTimes(21);
   });
+
+  it('keeps no summary from past the window until its row is read, and keeps it then', async () => {
+    // Outputs come from this same bounded read, whoever started the job, so the window bounds
+    // them too — a summary past it waits for the click that reads it.
+    let stored: MuxContentfulObject | undefined = value();
+    const updateField = vi.fn(async (mutate: (current: any) => any) => {
+      stored = mutate(stored);
+    });
+    const muxApi = apiThatReturns(longHistory(), {
+      rjob_old: {
+        ...OLD_JOB,
+        parameters: { asset_id: 'asset-1' },
+        outputs: { title: 'A generated title' },
+      },
+    });
+    renderPanel({ muxApi, updateField });
+
+    await settled(muxApi);
+    expect(stored?.robotsOutputs).toBeUndefined();
+
+    fireEvent.click(screen.getByTestId('robots-load-units-rjob_old'));
+    await waitFor(() => expect(stored?.robotsOutputs?.summarize?.jobId).toBe('rjob_old'));
+  });
 });
 
 describe('RobotsPanel — directive runs', () => {
@@ -1027,8 +1052,8 @@ describe('RobotsPanel — directive runs', () => {
 
   it('opens a run whose listing omits node_states, so automated jobs are still claimed', async () => {
     // A safety net rather than a normal path: the list does carry node_states. But it is the
-    // ownership signal — without it a directive's jobs look like a stranger's and never reach the
-    // entry — so a run that arrives without one is opened rather than guessed at.
+    // ownership signal — without it a directive's jobs look like a stranger's and are never
+    // recorded — so a run that arrives without one is opened rather than guessed at.
     const getRobotsDirectiveRun = vi.fn(async () => ({
       data: {
         run_id: 'drvrun_1',
@@ -3589,7 +3614,8 @@ describe('RobotsPanel — a directive run started outside Contentful', () => {
 
   it('stores nothing about it: not the run, and not the jobs it dispatched', async () => {
     // ADR-0009: a run reaches the entry only at creation, from this tab. Its jobs are no more
-    // this entry's than the run is — both are shown, and the entry stays byte-identical.
+    // this entry's than the run is — both are shown, neither is recorded, and with no output
+    // among them the entry stays byte-identical.
     const original = value();
     const stored = withStoredValue(original);
     renderPanel({ muxApi: importedApi(), updateField: stored.updateField, value: stored.value });
@@ -3798,5 +3824,313 @@ describe('RobotsPanel — which rows say they were started elsewhere', () => {
     await screen.findByTestId('robots_directive_run_table');
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(screen.queryByText('Started elsewhere')).not.toBeInTheDocument();
+  });
+});
+
+/** Stable across renders, as `App`'s are, so the panel's effects do not re-arm on every write. */
+const noResync = async () => undefined;
+const noDirectives: string[] = [];
+
+/** The field editor's half of the loop: what `updateField` writes is what the panel renders next. */
+const StatefulPanel: FC<{
+  sdk: FieldExtensionSDK;
+  muxApi: unknown;
+  initial: MuxContentfulObject;
+}> = ({ sdk: panelSdk, muxApi, initial }) => {
+  const [stored, setStored] = useState<MuxContentfulObject | undefined>(initial);
+  const storedRef = useRef(stored);
+  const updateField = useCallback(
+    async (
+      mutate: (current: MuxContentfulObject | undefined) => MuxContentfulObject | undefined
+    ) => {
+      storedRef.current = mutate(storedRef.current);
+      setStored(storedRef.current);
+    },
+    []
+  );
+  return (
+    <RobotsPanel
+      sdk={panelSdk}
+      muxApi={muxApi as never}
+      value={stored}
+      isActive
+      updateField={updateField}
+      resync={noResync}
+      defaultDirectiveIds={noDirectives}
+    />
+  );
+};
+
+/**
+ * `robotsOutputs` describes the video, so a summarize or moderate job reaches it whoever started
+ * it; the job itself is still recorded only when this entry claims it. ADR-0005's 2026-09-25
+ * amendment.
+ */
+describe('RobotsPanel — outputs of jobs started elsewhere', () => {
+  beforeEach(() => {
+    resetRobotsCapabilityCache();
+    vi.clearAllMocks();
+  });
+
+  const withStoredValue = (initial: MuxContentfulObject | undefined) => {
+    let stored = initial;
+    const updateField = vi.fn(async (mutate: (current: any) => any) => {
+      stored = mutate(stored);
+    });
+    return { updateField, value: initial, read: () => stored };
+  };
+
+  /** A list row: no `parameters`, no `outputs`. */
+  const listed = (overrides: Record<string, unknown> = {}) => ({
+    id: 'rjob_theirs',
+    workflow: 'summarize',
+    status: 'completed',
+    created_at: 1_700_000_000,
+    updated_at: 1_700_000_060,
+    ...overrides,
+  });
+
+  /**
+   * The same job from the single-job GET, which names its asset and carries its outputs. `null`
+   * for a record that names no asset — `undefined` would take the default.
+   */
+  const detailed = (
+    row: Record<string, unknown>,
+    outputs: Record<string, unknown>,
+    assetId: string | null = 'asset-1'
+  ) => ({
+    ...row,
+    units_consumed: 1,
+    ...(assetId !== null && { parameters: { asset_id: assetId } }),
+    outputs,
+  });
+
+  it('keeps the summary of a job run from the Mux dashboard, and records nothing about the job', async () => {
+    const row = listed();
+    const muxApi = apiThatReturns([row], {
+      rjob_theirs: detailed(row, { title: 'A dashboard title', tags: ['alpha'] }),
+    });
+    const stored = withStoredValue(value());
+    renderPanel({ muxApi, updateField: stored.updateField, value: stored.value });
+
+    await waitFor(() =>
+      expect(stored.read()?.robotsOutputs?.summarize).toMatchObject({
+        jobId: 'rjob_theirs',
+        title: 'A dashboard title',
+        tags: ['alpha'],
+      })
+    );
+    expect(stored.read()?.robotsJobs).toBeUndefined();
+    expect(stored.read()?.version).toBe(4);
+    expect(await screen.findByText('Started elsewhere')).toBeInTheDocument();
+    // The reads the Units column was already making, and no others.
+    expect(muxApi.listRobotsJobs).toHaveBeenCalledTimes(1);
+    expect(muxApi.getRobotsJob).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the moderation result of a job run from the Mux dashboard', async () => {
+    const row = listed({ id: 'rjob_mod', workflow: 'moderate' });
+    const muxApi = apiThatReturns([row], {
+      rjob_mod: detailed(row, {
+        exceeds_threshold: false,
+        max_scores: { sexual: 0.02, violence: 0.4 },
+      }),
+    });
+    const stored = withStoredValue(value());
+    renderPanel({ muxApi, updateField: stored.updateField, value: stored.value });
+
+    await waitFor(() =>
+      expect(stored.read()?.robotsOutputs?.moderate).toEqual({
+        jobId: 'rjob_mod',
+        completedAt: 1_700_000_060,
+        exceedsThreshold: false,
+        maxScores: { sexual: 0.02, violence: 0.4 },
+      })
+    );
+    expect(stored.read()?.robotsJobs).toBeUndefined();
+  });
+
+  it('keeps the summary a directive run nobody here started produced, and records neither', async () => {
+    // A directive this entry neither started nor runs on upload: the run is shown and its jobs
+    // are started elsewhere (ADR-0009). The summary its step wrote is still this video's.
+    const row = listed({ id: 'rjob_auto' });
+    const run = {
+      run_id: 'drvrun_mux',
+      subject_id: 'asset-1',
+      status: 'completed',
+      started_at: 1_700_000_000,
+      completed_at: 1_700_000_100,
+      node_states: [
+        {
+          reference_id: 'one',
+          status: 'dispatched',
+          workflow_name: 'summarize',
+          job_id: 'rjob_auto',
+        },
+      ],
+    };
+    const muxApi = {
+      ...apiThatReturns([row], {
+        rjob_auto: {
+          ...detailed(row, { title: 'Automated title' }),
+          directive: { id: 'drv_mux', run_id: 'drvrun_mux' },
+        },
+      }),
+      getRobotsDirectiveRun: vi.fn(async () => ({ data: run })),
+    };
+    const stored = withStoredValue(value());
+    renderPanel({ muxApi, updateField: stored.updateField, value: stored.value });
+
+    await screen.findByTestId('robots_directive_run_table');
+    await waitFor(() =>
+      expect(stored.read()?.robotsOutputs?.summarize?.title).toBe('Automated title')
+    );
+    expect(stored.read()?.robotsJobs).toBeUndefined();
+    expect(stored.read()?.robotsDirectiveRuns).toBeUndefined();
+  });
+
+  it('keeps nothing from a listed job whose own record names another asset, or none', async () => {
+    // The list is filtered by asset and the panel is keyed by it. Neither is taken on trust.
+    const elsewhere = listed({ id: 'rjob_other_asset' });
+    const unnamed = listed({ id: 'rjob_unnamed', workflow: 'moderate' });
+    const muxApi = apiThatReturns([elsewhere, unnamed], {
+      rjob_other_asset: detailed(elsewhere, { title: 'Another video' }, 'asset-2'),
+      rjob_unnamed: detailed(unnamed, { exceeds_threshold: true }, null),
+    });
+    const original = value();
+    const stored = withStoredValue(original);
+    renderPanel({ muxApi, updateField: stored.updateField, value: stored.value });
+
+    await waitFor(() => expect(muxApi.getRobotsJob).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(stored.updateField).toHaveBeenCalled());
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(stored.read()).toBe(original);
+  });
+
+  it('lets the newest completed summary win, and still records only the job that is ours', async () => {
+    const ours = {
+      id: 'rjob_ours',
+      workflow: 'summarize',
+      status: 'completed',
+      created_at: 1_700_000_000,
+      updated_at: 1_700_000_100,
+    };
+    const theirsLater = listed({
+      id: 'rjob_later',
+      created_at: 1_700_000_200,
+      updated_at: 1_700_000_300,
+    });
+    const theirsEarlier = listed({
+      id: 'rjob_earlier',
+      created_at: 1_699_999_000,
+      updated_at: 1_699_999_060,
+    });
+    const stored = withStoredValue(
+      value({
+        robotsJobs: [{ ...ours } as any],
+        robotsOutputs: {
+          summarize: { jobId: 'rjob_ours', completedAt: 1_700_000_100, title: 'Ours' },
+        },
+      })
+    );
+    const muxApi = apiThatReturns([theirsLater, ours, theirsEarlier], {
+      rjob_ours: detailed(ours, { title: 'Ours' }),
+      rjob_later: detailed(theirsLater, { title: 'Theirs, later' }),
+      rjob_earlier: detailed(theirsEarlier, { title: 'Theirs, earlier' }),
+    });
+    renderPanel({ muxApi, updateField: stored.updateField, value: stored.value });
+
+    await waitFor(() => expect(muxApi.getRobotsJob).toHaveBeenCalledTimes(3));
+    await waitFor(() =>
+      expect(stored.read()?.robotsOutputs?.summarize?.title).toBe('Theirs, later')
+    );
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(stored.read()?.robotsOutputs?.summarize?.jobId).toBe('rjob_later');
+    expect(stored.read()?.robotsJobs?.map((record) => record.id)).toEqual(['rjob_ours']);
+  });
+
+  it('enables Apply summary with a summary from elsewhere, and says what is already applied', async () => {
+    const row = listed();
+    const muxApi = apiThatReturns([row], {
+      rjob_theirs: detailed(row, {
+        title: 'A dashboard title',
+        description: 'A dashboard description',
+      }),
+    });
+    const setSummary = vi.fn(async () => undefined);
+    const entrySdk = {
+      ...sdk,
+      contentType: {
+        fields: [
+          { id: 'title', name: 'Title' },
+          { id: 'summary', name: 'Summary' },
+        ],
+      },
+      entry: {
+        fields: {
+          title: {
+            id: 'title',
+            type: 'Symbol',
+            locales: ['en-US'],
+            getValue: () => 'A dashboard title',
+            setValue: vi.fn(async () => undefined),
+          },
+          summary: {
+            id: 'summary',
+            type: 'Text',
+            locales: ['en-US'],
+            getValue: () => undefined,
+            setValue: setSummary,
+          },
+        },
+      },
+    } as unknown as FieldExtensionSDK;
+
+    render(<StatefulPanel sdk={entrySdk} muxApi={muxApi} initial={value()} />);
+
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Apply summary' })).toBeEnabled()
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Apply summary' }));
+
+    expect(
+      await screen.findByText('Title already holds this value. Nothing to apply.')
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Apply 1' }));
+    await waitFor(() =>
+      expect(setSummary).toHaveBeenCalledWith('A dashboard description', 'en-US')
+    );
+  });
+
+  it('reads and writes nothing on an entry whose Robots tab is never opened', async () => {
+    const row = listed();
+    const muxApi = apiThatReturns([row], {
+      rjob_theirs: detailed(row, { title: 'A dashboard title' }),
+    });
+    const updateField = vi.fn(async () => undefined);
+    renderPanel({ muxApi, updateField, isActive: false });
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(muxApi.listRobotsJobs).not.toHaveBeenCalled();
+    expect(updateField).not.toHaveBeenCalled();
+  });
+
+  it('keeps it without the tab only on an entry already polling a job of its own', async () => {
+    // ADR-0013's resumed poll reads the list for an entry that records a job still running,
+    // whether or not the tab is open. That entry already holds Robots data.
+    const running = {
+      id: 'rjob_running',
+      workflow: 'generate-chapters',
+      status: 'processing',
+      created_at: Math.floor(Date.now() / 1000),
+    };
+    const row = listed();
+    const muxApi = apiThatReturns([running, row], {
+      rjob_theirs: detailed(row, { title: 'A dashboard title' }),
+    });
+    const stored = withStoredValue(value({ robotsJobs: [running as any] }));
+    renderPanel({ muxApi, updateField: stored.updateField, value: stored.value, isActive: false });
+
+    await waitFor(() => expect(stored.read()?.robotsOutputs?.summarize?.jobId).toBe('rjob_theirs'));
   });
 });

@@ -48,6 +48,7 @@ export interface RobotsJob {
   updated_at?: number;
   passthrough?: string;
   units_consumed?: number;
+  /** Not on the list summary. `asset_id` is the asset the job ran on — see `mergeRobotsOutputs`. */
   parameters?: Record<string, unknown>;
   outputs?: Record<string, unknown>;
   errors?: unknown;
@@ -242,7 +243,8 @@ export interface RobotsModerateOutput {
 }
 
 /**
- * Outputs written onto the field JSON so the Delivery API returns them with the entry.
+ * Outputs written onto the field JSON so the Delivery API returns them with the entry: the newest
+ * completed run of each workflow on this asset, whoever started it (ADR-0005, ADR-0008).
  *
  * Only summarize and moderation live here, per the spec: captions and dubs stay Mux tracks, and
  * chapters and best thumbnails arrive through the existing asset mirror. That also keeps this

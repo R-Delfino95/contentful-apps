@@ -73,6 +73,12 @@ it rather than just a bare request id:
 > now scoped to the install*, below. The rest of this section still holds: the reconciliation, the
 > escape hatch and the two roles the string plays are unchanged.
 
+> **See also, 2026-09-25.** "Shown in the tab but never stored" now holds for the job's record
+> only. A summarize or moderate job run from the Mux dashboard has its output kept in
+> `robotsOutputs`, because an output describes the video rather than this entry's activity — see
+> ADR-0005's amendment of that date. Ownership, and everything here that decides it, still governs
+> `robotsJobs`.
+
 ## Consequences
 
 ### Positive

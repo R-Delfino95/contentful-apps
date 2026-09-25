@@ -46,6 +46,10 @@ A job is written to the entry when it is **plugin-originated**, meaning any of:
 
 Everything else is displayed and not stored.
 
+> **Amended 2026-09-25.** This rule now decides `robotsJobs` only. `robotsOutputs` keeps the newest
+> summarize and moderate output on this asset whoever started the job — see the amendment of that
+> date at the end of this ADR.
+
 > **Superseded 2026-09-11.** The prefix on its own no longer qualifies a job: `isPluginOriginatedJob`
 > trusts a `passthrough` only when its scope segment names this space, environment and entry. The
 > create path proves ownership through `ownJobIds` instead of by parsing its own string back out.
@@ -227,3 +231,101 @@ Three things follow, none of which is a code change:
 - **Growth being monotonic is the property to keep an eye on, not the current number.** Pruning is
   what we gave up in exchange for history outliving Mux's 30-day purge. That trade is still right
   at these numbers; it is worth re-reading if the shape of what we store ever changes.
+
+## Amendment, 2026-09-25: outputs describe the video, so they no longer follow the job
+
+The Decision above was written about jobs, and outputs came along with it: `applyRobotsJobsToValue`
+folded outputs only from the jobs the entry claims. So a `summarize` or `moderate` run outside this
+entry — from the Mux dashboard, from another entry or install on the same asset, or dispatched by
+a directive this entry does not claim — was listed, had its detail read for the Units column, and
+had its output in hand. Then it was dropped. *Apply summary* stayed disabled, and the output never
+reached the Delivery API. A directive with a summarize or moderate step fared the same whenever
+this entry did not claim its run: one run from the dashboard, one on an imported video, or an
+ingest run that has left every window ADR-0009 describes.
+
+The rule conflated two different things the field holds.
+
+- **`robotsJobs` is a record of what this entry did** — history, billing, ownership. That is what
+  the Decision above is about, and it stays exactly as it is, ownership-gated by the four tests
+  ADR-0003 describes.
+- **`robotsOutputs` describes the video**: its current summary, its moderation scores. Much like
+  the asset mirror, and a description of a video does not depend on who asked for it.
+
+So outputs stop following job ownership. **The newest completed `summarize` and `moderate` output
+for this asset is kept, whoever started the job.** Job records do not change.
+
+**The gate outputs keep is the asset, read off the job itself.** An output may only come from a
+job whose own `parameters.asset_id` — present on the single-job GET, and required in
+`@mux/mux-node`'s published job types — equals the value's `assetId`. Absent or different, nothing
+is written. Not the list's `asset_id` filter, and not the panel being keyed by asset: those are
+facts about how a job was *found*, and a regression in either — one already happened, when a
+swapped asset's jobs carried over onto the new entry — would otherwise put one video's summary on
+another video's entry. Ownership was never this check: the passthrough scope names the entry, not
+the asset, so even a job of ours is checked. The value's `assetId` is read at apply time, the
+value the mutator is handed.
+
+**Newest completed still wins** (ADR-0008), and more jobs can now compete for it, so the order is
+made strict; ADR-0008's amendment of the same date has why.
+
+**No new request is made.** External terminal jobs already had their detail read — this ADR's
+2026-09-10 amendment took ownership out of the read gate — so outputs now come from the reads the
+Units column was already making. The window is unchanged: the newest 20 jobs on the asset, five
+per pass. That bounds outputs too:
+
+- The newest external summarize or moderate falls outside it once twenty jobs, of any workflow and
+  any status, have been created on the asset after it. Its output is then not read, so not written,
+  and the entry keeps whatever output it had — possibly an older one, possibly none — until someone
+  reads that row: its `Not loaded` Units cell or *View output*, either of which brings it in. An
+  older job read that way cannot displace a newer output; the order sees to that.
+- A job Mux has purged, after 30 days, cannot be read at all. An entry whose tab nobody opened
+  while it was listed never gets its output.
+
+### The cost: entries flip to *Changed* that nobody ran anything from
+
+Opening the Robots tab on an entry whose asset had a completed summarize or moderate started
+elsewhere now writes `robotsOutputs`, raising the version to 4 if it was lower. A published entry
+shows *Changed* although nobody ran anything from Contentful — the unprompted write ADR-0006 exists
+to keep away from entries. It is the intended effect here, and the price of the output reaching the
+Delivery API at all: the field JSON is its only delivery path (ADR-0002), so an output the entry
+does not hold is one no consumer can read. ADR-0009 rejected the same cost for directive *runs*,
+because a run someone else started is not this entry's history; an output is the video's current
+description, which is the whole reason the field carries it.
+
+It is bounded, and checked in the code rather than assumed:
+
+- **Only where the Robots tab reads.** The panel is force-mounted on every entry with a video, but
+  its first read is gated on the tab being selected, so merely opening an entry makes no Robots read
+  and no Robots write (ADR-0006). There is one exception: ADR-0013's resumed poll reads the list without the tab for an
+  entry that records a job of its own still running, under six hours old, and that read now brings
+  in outputs from elsewhere too. That entry already holds Robots data at v4, and its own job's
+  progress writes to it anyway.
+- **Once per new output.** A later tick compares equal and `updateField` drops it; a re-run
+  elsewhere supersedes by the same rule a re-run here does.
+- **An install without Robots is untouched.** It lists no jobs, so there is nothing to keep, and an
+  entry whose video has no summarize or moderate output stays byte-identical.
+
+### What does not move
+
+`robotsJobs`, and every ownership test, are exactly as before. "Started elsewhere" still marks the
+jobs the entry does not record; its tooltip used to say they are not saved, which stopped being
+true of a summarize or moderate row, and now says the output is the exception. `onPublish` owns
+only the asset mirror keys and spreads the stored value around them, so an entry holding outputs
+and no job records keeps them through a publish like any other; the parity table already derived
+v4 for that shape, and a functions test now pins the merge for it.
+
+### Consequences of this amendment
+
+**Positive.** A summary or moderation result produced anywhere reaches the Delivery API and the
+*Apply summary* dialog. A directive this entry does not claim no longer loses its summarize and
+moderate outputs to the list window. Each key has one gate: records have ownership, outputs have
+the asset. No request is added.
+
+**Negative.** Entries flip to *Changed* the first time their tab is opened after something
+elsewhere summarized or moderated their video, with no action here; and, through ADR-0013, an entry
+polling its own running job can take that write without the tab. A summary run from the dashboard
+now supersedes one an editor ran here, when it completes later. The entry's own fields an editor
+applied a summary to are not touched — only `robotsOutputs` is. Outputs past the detail window
+wait for a click.
+
+**Neutral.** Nothing migrates. An output's `jobId` can now name a job `robotsJobs` does not hold,
+which is how a reader tells a summary from elsewhere; see ADR-0008's amendment of the same date.

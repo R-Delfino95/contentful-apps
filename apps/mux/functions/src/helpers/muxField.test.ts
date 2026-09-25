@@ -56,9 +56,9 @@ describe('deriveFieldVersion', () => {
     // An empty array must derive the version the entry already has, or a publish rewrites every
     // entry that ever opened the Robots tab without running anything.
     expect(deriveFieldVersion({ assetId: 'a', robotsDirectiveRuns: [] })).toBe(BASE_FIELD_VERSION);
-    expect(
-      deriveFieldVersion({ assetId: 'a', robotsJobs: [], robotsDirectiveRuns: [] })
-    ).toBe(BASE_FIELD_VERSION);
+    expect(deriveFieldVersion({ assetId: 'a', robotsJobs: [], robotsDirectiveRuns: [] })).toBe(
+      BASE_FIELD_VERSION
+    );
   });
 
   it('never downgrades a value whose stored version is ahead of its contents', () => {
@@ -116,6 +116,22 @@ describe('mergeMuxAssetIntoField', () => {
     expect(merged.robotsOutputs).toEqual(existing.robotsOutputs);
     expect(merged.playbackId).toBe('playback-1');
     expect(merged.version).toBe(5);
+  });
+
+  it('preserves an output whose job was never recorded here, at v4', () => {
+    // What an entry holds once the browser keeps a summary from a job started elsewhere: outputs,
+    // and no job records to go with them. See ADR-0005's 2026-09-25 amendment.
+    const existing = {
+      version: FIELD_VERSION_WITH_ROBOTS,
+      assetId: 'asset-1',
+      robotsOutputs: { summarize: { jobId: 'rjob_dashboard', completedAt: 1, title: 'Kept' } },
+    };
+
+    const merged = mergeMuxAssetIntoField(existing, assetMirror);
+
+    expect(merged.robotsOutputs).toEqual(existing.robotsOutputs);
+    expect('robotsJobs' in merged).toBe(false);
+    expect(merged.version).toBe(FIELD_VERSION_WITH_ROBOTS);
   });
 
   it('does not downgrade version to 1 the way the previous replace did', () => {

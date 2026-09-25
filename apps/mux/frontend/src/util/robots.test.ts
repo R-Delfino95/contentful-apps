@@ -41,7 +41,10 @@ const ours = { scope };
 const ourPassthrough = (requestId = 'abcdef0123456789') =>
   `contentful@2.0.0|${scope.space}:${scope.environment}:${scope.entry}|${requestId}`;
 
-/** A job this plugin started — it carries our passthrough. */
+/**
+ * A job this plugin started, as the single-job GET returns it: our passthrough, and the asset it
+ * ran on in `parameters`.
+ */
 const job = (overrides: Partial<RobotsJob> = {}): RobotsJob =>
   ({
     id: 'rjob_1',
@@ -50,6 +53,7 @@ const job = (overrides: Partial<RobotsJob> = {}): RobotsJob =>
     created_at: 1_700_000_000,
     updated_at: 1_700_000_100,
     passthrough: ourPassthrough('req-1-0000000000'),
+    parameters: { asset_id: 'asset-1' },
     ...overrides,
   } as RobotsJob);
 
@@ -75,7 +79,7 @@ describe('buildJobPassthrough', () => {
     expect(parsed?.scope).toEqual(scope);
   });
 
-  it('uses a 16-character request id, which is what keeps it inside Mux\'s 255-char cap', () => {
+  it("uses a 16-character request id, which is what keeps it inside Mux's 255-char cap", () => {
     // The budget, with Contentful's 64-character id limit spent three times over:
     //   "contentful@" 11 + version 20 + "|" + space 64 + ":" + environment 64 + ":" + entry 64
     //   + "|" + request id 16  =  243.
@@ -352,8 +356,8 @@ describe('directiveRunRefsFromJobs', () => {
 
 describe('jobsClaimedByEntry', () => {
   it('is exactly what applyRobotsJobsToValue stores', () => {
-    // One rule behind two things: what the entry holds, and which rows the table marks as started
-    // elsewhere. If they ever disagreed, a row would say "not saved" about a job that is.
+    // One rule behind two things: what the entry records, and which rows the table marks as
+    // started elsewhere. If they ever disagreed, a row would say "no record" about a job with one.
     const value = baseValue({
       robotsDirectiveRuns: [{ runId: 'drvrun_1', directiveId: 'drv_1', jobIds: ['rjob_run'] }],
     });
@@ -372,12 +376,9 @@ describe('jobsClaimedByEntry', () => {
 describe('createRobotsJobWithReconciliation', () => {
   it('stamps a passthrough on the created job', async () => {
     const createRobotsJob = vi.fn(async () => ({ data: job() }));
-    await createRobotsJobWithReconciliation(
-      { createRobotsJob } as never,
-      'summarize',
-      'asset-1',
-      { asset_id: 'asset-1' }
-    );
+    await createRobotsJobWithReconciliation({ createRobotsJob } as never, 'summarize', 'asset-1', {
+      asset_id: 'asset-1',
+    });
 
     const [, , passthrough] = createRobotsJob.mock.calls[0] as unknown[];
     expect(String(passthrough)).toContain('contentful@');
@@ -546,7 +547,9 @@ describe('mergeJobRecords', () => {
 
   it('lets the API win when a stored record disagrees', () => {
     const existing = mergeJobRecords(undefined, [job({ status: 'completed' })]);
-    const merged = mergeJobRecords(existing, [job({ status: 'errored', errors: { messages: ['nope'] } })]);
+    const merged = mergeJobRecords(existing, [
+      job({ status: 'errored', errors: { messages: ['nope'] } }),
+    ]);
     expect(merged?.[0].status).toBe('errored');
     expect(merged?.[0].error).toBe('nope');
   });
@@ -562,9 +565,11 @@ describe('mergeJobRecords', () => {
 
 describe('mergeRobotsOutputs', () => {
   it('persists summarize output with its provenance', () => {
-    const merged = mergeRobotsOutputs(undefined, [
-      job({ outputs: { title: 'A title', description: 'A description', tags: ['x', 'y'] } }),
-    ]);
+    const merged = mergeRobotsOutputs(
+      undefined,
+      [job({ outputs: { title: 'A title', description: 'A description', tags: ['x', 'y'] } })],
+      'asset-1'
+    );
 
     expect(merged?.summarize).toEqual({
       jobId: 'rjob_1',
@@ -576,13 +581,17 @@ describe('mergeRobotsOutputs', () => {
   });
 
   it('persists moderation scores', () => {
-    const merged = mergeRobotsOutputs(undefined, [
-      job({
-        id: 'rjob_mod',
-        workflow: 'moderate',
-        outputs: { exceeds_threshold: false, max_scores: { sexual: 0.1, violence: 0.2 } },
-      }),
-    ]);
+    const merged = mergeRobotsOutputs(
+      undefined,
+      [
+        job({
+          id: 'rjob_mod',
+          workflow: 'moderate',
+          outputs: { exceeds_threshold: false, max_scores: { sexual: 0.1, violence: 0.2 } },
+        }),
+      ],
+      'asset-1'
+    );
 
     expect(merged?.moderate).toMatchObject({
       jobId: 'rjob_mod',
@@ -593,39 +602,120 @@ describe('mergeRobotsOutputs', () => {
 
   it('ignores workflows whose output is not persisted', () => {
     expect(
-      mergeRobotsOutputs(undefined, [
-        job({ workflow: 'find-scenes', outputs: { scenes: [{ start_ms: 0 }] } }),
-      ])
+      mergeRobotsOutputs(
+        undefined,
+        [job({ workflow: 'find-scenes', outputs: { scenes: [{ start_ms: 0 }] } })],
+        'asset-1'
+      )
     ).toBeUndefined();
   });
 
   it('ignores jobs that are not completed', () => {
     expect(
-      mergeRobotsOutputs(undefined, [job({ status: 'processing', outputs: { title: 'A' } })])
+      mergeRobotsOutputs(
+        undefined,
+        [job({ status: 'processing', outputs: { title: 'A' } })],
+        'asset-1'
+      )
     ).toBeUndefined();
   });
 
   it('returns the same reference when the same job comes back again', () => {
-    const existing = mergeRobotsOutputs(undefined, [job({ outputs: { title: 'A' } })]);
-    expect(mergeRobotsOutputs(existing, [job({ outputs: { title: 'A' } })])).toBe(existing);
+    const existing = mergeRobotsOutputs(undefined, [job({ outputs: { title: 'A' } })], 'asset-1');
+    expect(mergeRobotsOutputs(existing, [job({ outputs: { title: 'A' } })], 'asset-1')).toBe(
+      existing
+    );
   });
 
   it('lets a newer summarize run replace an older one', () => {
-    const existing = mergeRobotsOutputs(undefined, [job({ outputs: { title: 'Old' } })]);
-    const merged = mergeRobotsOutputs(existing, [
-      job({ id: 'rjob_2', updated_at: 1_700_000_500, outputs: { title: 'New' } }),
-    ]);
+    const existing = mergeRobotsOutputs(undefined, [job({ outputs: { title: 'Old' } })], 'asset-1');
+    const merged = mergeRobotsOutputs(
+      existing,
+      [job({ id: 'rjob_2', updated_at: 1_700_000_500, outputs: { title: 'New' } })],
+      'asset-1'
+    );
     expect(merged?.summarize?.title).toBe('New');
   });
 
   it('does not let a stale job overwrite a newer summary', () => {
-    const existing = mergeRobotsOutputs(undefined, [
-      job({ id: 'rjob_new', updated_at: 1_700_000_500, outputs: { title: 'New' } }),
-    ]);
-    const merged = mergeRobotsOutputs(existing, [
-      job({ id: 'rjob_old', updated_at: 1_700_000_100, outputs: { title: 'Old' } }),
-    ]);
+    const existing = mergeRobotsOutputs(
+      undefined,
+      [job({ id: 'rjob_new', updated_at: 1_700_000_500, outputs: { title: 'New' } })],
+      'asset-1'
+    );
+    const merged = mergeRobotsOutputs(
+      existing,
+      [job({ id: 'rjob_old', updated_at: 1_700_000_100, outputs: { title: 'Old' } })],
+      'asset-1'
+    );
     expect(merged?.summarize?.title).toBe('New');
+  });
+
+  it('keeps nothing from a job whose own record names another asset', () => {
+    expect(
+      mergeRobotsOutputs(
+        undefined,
+        [job({ parameters: { asset_id: 'asset-2' }, outputs: { title: 'Another video' } })],
+        'asset-1'
+      )
+    ).toBeUndefined();
+  });
+
+  it('keeps nothing from a job that does not say which asset it ran on', () => {
+    // The list it came from is filtered by asset. That is not taken on trust.
+    for (const parameters of [undefined, {}]) {
+      expect(
+        mergeRobotsOutputs(undefined, [job({ parameters, outputs: { title: 'A' } })], 'asset-1')
+      ).toBeUndefined();
+    }
+  });
+
+  it('keeps nothing when the value names no asset either', () => {
+    expect(
+      mergeRobotsOutputs(
+        undefined,
+        [job({ parameters: undefined, outputs: { title: 'A' } })],
+        undefined
+      )
+    ).toBeUndefined();
+  });
+
+  it('settles two jobs that completed in the same second the same way, whichever is read first', () => {
+    // Mux timestamps are whole seconds. An answer that depends on read order lets two open
+    // sessions, each having read a different one, rewrite the entry back and forth.
+    const a = job({ id: 'rjob_a', updated_at: 1_700_000_500, outputs: { title: 'A' } });
+    const b = job({ id: 'rjob_b', updated_at: 1_700_000_500, outputs: { title: 'B' } });
+
+    // The greater id, as ADR-0008 says. Arbitrary, and the same everywhere.
+    expect(mergeRobotsOutputs(undefined, [a, b], 'asset-1')?.summarize?.jobId).toBe('rjob_b');
+    expect(mergeRobotsOutputs(undefined, [b, a], 'asset-1')?.summarize?.jobId).toBe('rjob_b');
+
+    // And a session that has read only the losing job leaves the winning one alone.
+    const settled = mergeRobotsOutputs(undefined, [b], 'asset-1');
+    expect(mergeRobotsOutputs(settled, [a], 'asset-1')).toBe(settled);
+  });
+
+  it('counts a missing or unreadable completion time as the oldest', () => {
+    const timed = job({ id: 'rjob_timed', updated_at: 1_700_000_500, outputs: { title: 'Timed' } });
+    const untimed = job({
+      id: 'rjob_untimed',
+      updated_at: undefined,
+      outputs: { title: 'Untimed' },
+    });
+
+    const withTimed = mergeRobotsOutputs(undefined, [timed], 'asset-1');
+    expect(mergeRobotsOutputs(withTimed, [untimed], 'asset-1')).toBe(withTimed);
+
+    const withUntimed = mergeRobotsOutputs(undefined, [untimed], 'asset-1');
+    expect(mergeRobotsOutputs(withUntimed, [timed], 'asset-1')?.summarize?.jobId).toBe(
+      'rjob_timed'
+    );
+
+    // The stored value is user-reachable JSON: a timestamp that is not a number must not pin it.
+    const garbled = {
+      summarize: { jobId: 'rjob_garbled', completedAt: 'yesterday' as unknown as number },
+    };
+    expect(mergeRobotsOutputs(garbled, [timed], 'asset-1')?.summarize?.jobId).toBe('rjob_timed');
   });
 });
 
@@ -695,7 +785,6 @@ describe('activeJobs', () => {
   });
 });
 
-
 describe('activeDirectiveRuns', () => {
   const now = 1_700_000_000_000;
 
@@ -732,9 +821,9 @@ describe('activeDirectiveRuns', () => {
   });
 
   it('keeps a run with no start time, which is the row the create response seeds', () => {
-    expect(activeDirectiveRuns([run({ status: 'pending', started_at: undefined })], now)).toHaveLength(
-      1
-    );
+    expect(
+      activeDirectiveRuns([run({ status: 'pending', started_at: undefined })], now)
+    ).toHaveLength(1);
   });
 });
 
@@ -755,7 +844,7 @@ describe('job ownership — what gets written to the entry', () => {
     ).toBe(false);
   });
 
-  it('takes the caller\'s word for a job it just created', () => {
+  it("takes the caller's word for a job it just created", () => {
     // The create path holds the response to its own POST. It should not have to prove ownership
     // by parsing a string back out — and this is what keeps the record being written even where
     // `sdk.ids` handed us no scope at all.
@@ -786,16 +875,21 @@ describe('job ownership — what gets written to the entry', () => {
     ).toEqual(new Set(['a', 'b', 'c']));
   });
 
-  it('shows a dashboard job but never stores it', () => {
+  it('shows a dashboard job but never records it', () => {
     const value = baseValue();
     // Displaying everything is what makes the list honest; the entry records only what was done
-    // through Contentful.
+    // through Contentful. A workflow with no persisted output, so there is nothing else to keep.
     expect(
-      applyRobotsJobsToValue(value, [foreignJob({ outputs: { title: 'A' } })], undefined, ours)
+      applyRobotsJobsToValue(
+        value,
+        [foreignJob({ workflow: 'find-scenes', outputs: { scenes: [] } })],
+        undefined,
+        ours
+      )
     ).toBe(value);
   });
 
-  it('stores a directive job once its run identifies it as ours', () => {
+  it('records a directive job once its run identifies it as ours', () => {
     const value = baseValue();
     const runs = [{ run_id: 'drvrun_1', node_states: [{ job_id: 'rjob_dashboard' }] }];
 
@@ -805,7 +899,7 @@ describe('job ownership — what gets written to the entry', () => {
       jobIdsFromDirectiveRuns(runs)
     );
 
-    expect(next).not.toBe(value);
+    expect(next?.robotsJobs?.map(({ id }) => id)).toEqual(['rjob_dashboard']);
     expect(next?.robotsOutputs?.summarize?.title).toBe('Automated');
   });
 
@@ -829,6 +923,101 @@ describe('job ownership — what gets written to the entry', () => {
     );
     const afterPurge = applyRobotsJobsToValue(withOutput, [], undefined, ours);
     expect(afterPurge?.robotsOutputs?.summarize?.title).toBe('Kept');
+  });
+});
+
+/**
+ * `robotsJobs` is what this entry did; `robotsOutputs` describes the video. So outputs are kept
+ * whoever started the job, and the job itself is still recorded only when the entry claims it.
+ * See ADR-0005's 2026-09-25 amendment.
+ */
+describe('applyRobotsJobsToValue — outputs, whoever started the job', () => {
+  it('keeps the summary and moderation result of jobs run elsewhere, and records neither job', () => {
+    const next = applyRobotsJobsToValue(
+      baseValue(),
+      [
+        foreignJob({ outputs: { title: 'From the dashboard' } }),
+        foreignJob({
+          id: 'rjob_dashboard_mod',
+          workflow: 'moderate',
+          outputs: { exceeds_threshold: true, max_scores: { sexual: 0.9, violence: 0.1 } },
+        }),
+      ],
+      undefined,
+      ours
+    );
+
+    expect(next?.robotsOutputs?.summarize).toMatchObject({
+      jobId: 'rjob_dashboard',
+      title: 'From the dashboard',
+    });
+    expect(next?.robotsOutputs?.moderate).toMatchObject({
+      jobId: 'rjob_dashboard_mod',
+      exceedsThreshold: true,
+    });
+    expect(next?.robotsJobs).toBeUndefined();
+    expect(next?.version).toBe(4);
+  });
+
+  it('keeps the output of a job a directive dispatched on a run this entry does not claim', () => {
+    const dispatched = foreignJob({
+      id: 'rjob_auto',
+      directive: { id: 'drv_elsewhere', run_id: 'drvrun_elsewhere' },
+      outputs: { title: 'Automated' },
+    });
+
+    const next = applyRobotsJobsToValue(baseValue(), [dispatched], new Set(), ours);
+
+    expect(next?.robotsOutputs?.summarize?.jobId).toBe('rjob_auto');
+    expect(next?.robotsJobs).toBeUndefined();
+  });
+
+  it('keeps no output of another asset, even from a job of ours', () => {
+    // The passthrough scopes a job to this entry, not to its asset — ownership says nothing about
+    // which video a summary describes.
+    const next = applyRobotsJobsToValue(
+      baseValue(),
+      [job({ parameters: { asset_id: 'asset-2' }, outputs: { title: 'Another video' } })],
+      undefined,
+      ours
+    );
+    expect(next?.robotsOutputs).toBeUndefined();
+  });
+
+  it('lets the newest completed run win, whether it ran here or elsewhere', () => {
+    const oursEarlier = job({
+      id: 'rjob_ours',
+      updated_at: 1_700_000_100,
+      outputs: { title: 'Ours' },
+    });
+    const theirsLater = foreignJob({
+      id: 'rjob_theirs',
+      updated_at: 1_700_000_900,
+      outputs: { title: 'Theirs' },
+    });
+    const theirsEarliest = foreignJob({
+      id: 'rjob_theirs_first',
+      updated_at: 1_700_000_050,
+      outputs: { title: 'Theirs, first' },
+    });
+
+    const withOurs = applyRobotsJobsToValue(baseValue(), [oursEarlier], undefined, ours);
+    expect(
+      applyRobotsJobsToValue(withOurs, [theirsLater], undefined, ours)?.robotsOutputs?.summarize
+        ?.title
+    ).toBe('Theirs');
+    // An older one read late — a row past the detail window, opened afterwards — changes nothing.
+    expect(applyRobotsJobsToValue(withOurs, [oursEarlier, theirsEarliest], undefined, ours)).toBe(
+      withOurs
+    );
+    for (const jobs of [
+      [oursEarlier, theirsLater],
+      [theirsLater, oursEarlier],
+    ]) {
+      expect(
+        applyRobotsJobsToValue(baseValue(), jobs, undefined, ours)?.robotsOutputs?.summarize?.jobId
+      ).toBe('rjob_theirs');
+    }
   });
 });
 
@@ -863,9 +1052,7 @@ describe('the shape the list endpoint actually returns', () => {
   });
 
   it('treats a job already on the entry as ours for good', () => {
-    expect(
-      isPluginOriginatedJob(summaryJob(), undefined, new Set(['rjob_summary']))
-    ).toBe(true);
+    expect(isPluginOriginatedJob(summaryJob(), undefined, new Set(['rjob_summary']))).toBe(true);
   });
 
   it('still ignores a summary job nothing has ever claimed', () => {
@@ -894,11 +1081,15 @@ describe('the shape the list endpoint actually returns', () => {
       undefined,
       ours
     );
-    const second = applyRobotsJobsToValue(first, [summaryJob({ status: 'pending' })], undefined, ours);
+    const second = applyRobotsJobsToValue(
+      first,
+      [summaryJob({ status: 'pending' })],
+      undefined,
+      ours
+    );
     expect(second).toBe(first);
   });
 });
-
 
 describe('jobsNeedingDetail', () => {
   it('asks for detail on finished jobs only', () => {
@@ -908,7 +1099,11 @@ describe('jobsNeedingDetail', () => {
       { id: 'c', workflow: 'summarize', status: 'errored' },
     ] as never as RobotsJob[];
 
-    expect(jobsNeedingDetail(jobs, new Set()).map((j) => j.id).sort()).toEqual(['a', 'c']);
+    expect(
+      jobsNeedingDetail(jobs, new Set())
+        .map((j) => j.id)
+        .sort()
+    ).toEqual(['a', 'c']);
   });
 
   it('never asks twice for the same job', () => {
@@ -957,7 +1152,7 @@ describe('jobsNeedingDetail', () => {
     expect([...attempted].sort()).toEqual(['job-45', 'job-46', 'job-47', 'job-48', 'job-49']);
   });
 
-  it('does not mutate the caller\'s array', () => {
+  it("does not mutate the caller's array", () => {
     const jobs = [
       { id: 'old', workflow: 'summarize', status: 'completed', created_at: 1 },
       { id: 'new', workflow: 'summarize', status: 'completed', created_at: 2 },
@@ -967,7 +1162,6 @@ describe('jobsNeedingDetail', () => {
     expect(jobs.map((j) => j.id)).toEqual(['old', 'new']);
   });
 });
-
 
 /**
  * Ownership on the polling path, which is where the scope segment earns its place.
@@ -980,12 +1174,10 @@ describe('jobsNeedingDetail', () => {
  * job comes home and a stranger's still does not.
  */
 describe('applyRobotsJobsToValue — ownership from a scoped passthrough', () => {
-  const value = () => ({ assetId: 'asset-1', version: 3 }) as never as MuxContentfulObject;
+  const value = () => ({ assetId: 'asset-1', version: 3 } as never as MuxContentfulObject);
 
   const listed = (passthrough?: string, id = 'rjob_listed') =>
-    [
-      { id, workflow: 'summarize', status: 'completed', passthrough },
-    ] as never as RobotsJob[];
+    [{ id, workflow: 'summarize', status: 'completed', passthrough }] as never as RobotsJob[];
 
   it('adopts an orphan of ours, which nothing else could ever claim', () => {
     // The page was closed during the cold-start window, so the create was never recorded. Before
@@ -1038,7 +1230,9 @@ describe('applyRobotsJobsToValue — ownership from a scoped passthrough', () =>
   it('still records a job a directive run on this asset dispatched', () => {
     const next = applyRobotsJobsToValue(
       value(),
-      [{ id: 'rjob_directive', workflow: 'summarize', status: 'completed' }] as never as RobotsJob[],
+      [
+        { id: 'rjob_directive', workflow: 'summarize', status: 'completed' },
+      ] as never as RobotsJob[],
       new Set(['rjob_directive']),
       ours
     );
@@ -1160,9 +1354,7 @@ describe('ownership from a recorded directive run', () => {
     // The point of the whole thing: the run has fallen out of the list window, or the directive
     // has been deleted. The entry still knows which jobs it dispatched.
     const value = baseValue({
-      robotsDirectiveRuns: [
-        { runId: 'drvrun_1', directiveId: 'drv_1', jobIds: ['rjob_auto'] },
-      ],
+      robotsDirectiveRuns: [{ runId: 'drvrun_1', directiveId: 'drv_1', jobIds: ['rjob_auto'] }],
     });
 
     const next = applyRobotsJobsToValue(
@@ -1301,11 +1493,9 @@ describe('createRobotsDirectiveRunWithReconciliation', () => {
         })),
       } as never;
 
-      const pending = createRobotsDirectiveRunWithReconciliation(
-        muxApi,
-        'drv_1',
-        'asset-1'
-      ).catch((error) => error);
+      const pending = createRobotsDirectiveRunWithReconciliation(muxApi, 'drv_1', 'asset-1').catch(
+        (error) => error
+      );
       await vi.runAllTimersAsync();
       const error = await pending;
 
@@ -1329,11 +1519,9 @@ describe('createRobotsDirectiveRunWithReconciliation', () => {
         }),
       } as never;
 
-      const pending = createRobotsDirectiveRunWithReconciliation(
-        muxApi,
-        'drv_1',
-        'asset-1'
-      ).catch((error) => error);
+      const pending = createRobotsDirectiveRunWithReconciliation(muxApi, 'drv_1', 'asset-1').catch(
+        (error) => error
+      );
       await vi.runAllTimersAsync();
       expect(await pending).toBeInstanceOf(RobotsUnconfirmedDirectiveRunError);
     } finally {
@@ -1352,11 +1540,9 @@ describe('createRobotsDirectiveRunWithReconciliation', () => {
         listRobotsDirectiveRuns: vi.fn(async () => ({ data: [] })),
       } as never;
 
-      const pending = createRobotsDirectiveRunWithReconciliation(
-        muxApi,
-        'drv_1',
-        'asset-1'
-      ).catch(() => undefined);
+      const pending = createRobotsDirectiveRunWithReconciliation(muxApi, 'drv_1', 'asset-1').catch(
+        () => undefined
+      );
       await vi.runAllTimersAsync();
       await pending;
 

@@ -234,11 +234,19 @@ describe('a row started elsewhere', () => {
     );
   });
 
-  it('gives the directive case its own words, because a directive job is not stored either', () => {
+  it('gives the directive case its own words, because a directive job is not recorded either', () => {
     // "Run outside the plugin" would be false for a job a directive dispatched on a run this
     // entry did not start. The explanation has to be true of every row that carries the badge.
     expect(STARTED_ELSEWHERE_TOOLTIP).toMatch(/a directive this entry did not start/);
-    expect(STARTED_ELSEWHERE_TOOLTIP).toMatch(/not saved to this entry/);
+    expect(STARTED_ELSEWHERE_TOOLTIP).toMatch(/this entry keeps no record of it/);
+  });
+
+  it('does not say the result is lost, because a summary or moderation result is kept', () => {
+    // The old "it is not saved to this entry" became false for summarize and moderate rows.
+    expect(STARTED_ELSEWHERE_TOOLTIP).not.toMatch(/not saved/);
+    expect(STARTED_ELSEWHERE_TOOLTIP).toMatch(
+      /Summaries and moderation results are the exception: the newest of each is saved to this entry, whoever ran it/
+    );
   });
 });
 

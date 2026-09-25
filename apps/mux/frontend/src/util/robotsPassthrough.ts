@@ -11,9 +11,10 @@ import {
 /**
  * Deciding which Robots jobs are ours, and recovering a create whose outcome Mux never confirmed.
  *
- * Ownership governs **what is written to the entry**, not what is read: the tab shows every job on
- * the asset, dashboard ones included, and fetches their detail. Conflating the two is what made
- * dashboard jobs render a permanently blank Units column. See ADR-0003 and ADR-0005.
+ * Ownership governs **which job records the entry keeps**, not what is read: the tab shows every job
+ * on the asset, dashboard ones included, and fetches their detail. Conflating the two is what made
+ * dashboard jobs render a permanently blank Units column. Nor does it govern outputs, which
+ * describe the video whoever asked for them. See ADR-0003 and ADR-0005.
  */
 
 const ROBOTS_PLUGIN_ID = 'contentful';
@@ -91,10 +92,11 @@ export interface RobotsOwnershipOptions {
 }
 
 /**
- * Whether a job was started through this plugin, and so belongs on the entry.
+ * Whether a job was started through this plugin, and so is recorded in `robotsJobs`.
  *
  * Four ways to qualify, checked in order. Anything else — a job someone ran from the Mux
- * dashboard — is displayed but never stored.
+ * dashboard — is displayed but not recorded. Its summary or moderation output is still kept; see
+ * `mergeRobotsOutputs`.
  */
 export function isPluginOriginatedJob(
   job: RobotsJob,

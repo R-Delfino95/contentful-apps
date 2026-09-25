@@ -137,7 +137,7 @@ export function useRobotsDirectiveRuns({
 
             // `node_states` is normally on the list response; this is the fallback. It is the
             // ownership signal — what says which jobs this directive dispatched — so without it a
-            // directive's jobs are indistinguishable from a stranger's and never reach the entry.
+            // directive's jobs are indistinguishable from a stranger's and are never recorded.
             return Promise.all(
               runs.map(async (run) => {
                 if (run.node_states) return run;

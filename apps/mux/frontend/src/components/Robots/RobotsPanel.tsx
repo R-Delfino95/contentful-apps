@@ -68,8 +68,9 @@ import { useRobotsJobList } from './useRobotsJobList';
  * serialized write path on the App component, so this loop and the 500 ms asset poll cannot
  * clobber each other. See ADR-0001.
  *
- * **It shows more than it stores.** The table lists every Robots job on the asset, dashboard ones
- * included; only jobs this plugin started reach the entry. See `isPluginOriginatedJob`, ADR-0005.
+ * **It shows more than it records.** The table lists every Robots job on the asset, dashboard ones
+ * included; only jobs this plugin started are recorded on the entry. The newest summary and
+ * moderation output is kept whoever started the job. See `isPluginOriginatedJob`, ADR-0005.
  *
  * **Neither Run button offers a retry it cannot justify.** Both creates are billable and neither
  * API has an idempotency key, so an unconfirmed outcome is reconciled against the server and,
@@ -534,7 +535,7 @@ const RobotsPanelForAsset: FC<RobotsPanelProps & { assetId: string }> = ({
       // run is added at creation and nowhere else — so every run it can see is safe to pass.
       const withRuns = applyRobotsDirectiveRunsToValue(current, runs);
       // Claiming is narrower: a run of a directive this entry has no tie to was started somewhere
-      // else, and its jobs are shown, not stored (ADR-0009).
+      // else, and its jobs are shown, not recorded (ADR-0009).
       return applyRobotsJobsToValue(withRuns, latestJobs, jobIdsFromDirectiveRuns(claiming), {
         // The prefix identifies the app, not the install, so it proves nothing on its own; the
         // scope segment is what says the job was started from this space, environment and entry.
@@ -563,10 +564,10 @@ const RobotsPanelForAsset: FC<RobotsPanelProps & { assetId: string }> = ({
   const activeRuns = useMemo(() => activeDirectiveRuns(directiveRuns), [directiveRuns]);
 
   /**
-   * Rows the entry will not hold, so each can say why. Read off the rule the persist effect
-   * stores by rather than off what is stored: a job of ours is briefly unstored after every
-   * create, and for up to 90 s behind the publish gate, and "started elsewhere" would be false
-   * for it. The jobs this session created count as ours for the same reason.
+   * Rows whose job the entry will not record, so each can say why. Read off the rule the persist
+   * effect records by rather than off what is recorded: a job of ours is briefly unrecorded after
+   * every create, and for up to 90 s behind the publish gate, and "started elsewhere" would be
+   * false for it. The jobs this session created count as ours for the same reason.
    */
   const startedElsewhereIds = useMemo(() => {
     const claimed = new Set(

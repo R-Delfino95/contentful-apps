@@ -61,18 +61,20 @@ export function unitsCell(job: RobotsJob, detail: RobotsJobDetailState): RobotsU
 }
 
 /**
- * Why a row carries the "Started elsewhere" badge. It has to hold for every job that gets it —
- * including one dispatched by a directive this entry neither started nor runs on upload, which is
- * shown and never stored exactly like a dashboard job.
+ * Why a row carries the "Started elsewhere" badge. It has to hold for every job that gets it,
+ * whatever its workflow: none of them is recorded, and the summarize and moderate ones still have
+ * their output kept (ADR-0005's 2026-09-25 amendment).
  */
 export const STARTED_ELSEWHERE_TOOLTIP =
   'Started outside this entry — from the Mux dashboard, another entry, or a directive this entry ' +
-  'did not start. It is listed because it ran on this video; it is not saved to this entry.';
+  'did not start. It is listed because it ran on this video, and this entry keeps no record of ' +
+  'it. Summaries and moderation results are the exception: the newest of each is saved to this ' +
+  'entry, whoever ran it.';
 
 interface RobotsJobTableProps {
   jobs: RobotsJob[];
   /**
-   * Ids of the jobs this entry does not claim. They are shown and never stored, so the row says
+   * Ids of the jobs this entry does not claim. They are shown and not recorded, so the row says
    * why rather than leaving the editor to notice the gap in the Data tab.
    */
   startedElsewhereIds: Set<string>;

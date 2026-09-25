@@ -28,6 +28,11 @@ both cases the jobs that run dispatched stop being recognisable as ours: they ar
 the tab, they are still visible in Mux, and they can never again reach the entry. The entry ends up
 with a permanent hole in exactly the automation ADR-0005 was written to preserve.
 
+> **See also, 2026-09-25.** For summarize and moderate the hole is smaller than this says: their
+> outputs now reach `robotsOutputs` whoever dispatched the job, so an unclaimable job's summary is
+> still kept (ADR-0005's amendment of that date). What stays unclaimable is the job record, which
+> is what this ADR, and every "shown is not stored" below, is about.
+
 `handleRunDirective` made this worse than it needed to be. Starting a run from the Robots tab is a
 deliberate, billable act by a named editor on a specific entry — the one case where ownership is
 beyond doubt — and it wrote **nothing**. The record existed only in Mux, inside a list window, and
